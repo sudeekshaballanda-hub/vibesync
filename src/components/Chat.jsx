@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-export default function Chat({ messages, onSendMessage, roomCode }) {
+export default function Chat({ messages = [], onSendMessage, roomCode, isHost }) {
     const [input, setInput] = useState('');
     const messagesEndRef = useRef(null);
 
@@ -33,7 +33,7 @@ export default function Chat({ messages, onSendMessage, roomCode }) {
                 <span className="room-badge">{roomCode}</span>
             </div>
             <div className="chat-messages">
-                {!messages || messages.length === 0 ? (
+                {messages.length === 0 ? (
                     <p className="no-messages">💭 No messages yet. Start the conversation!</p>
                 ) : (
                     messages.map((msg, idx) => (
@@ -49,7 +49,7 @@ export default function Chat({ messages, onSendMessage, roomCode }) {
             <div className="chat-input">
                 <input
                     type="text"
-                    placeholder="Type your message..."
+                    placeholder={isHost ? "Broadcast to everyone..." : "Send message..."}
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyPress={handleKeyPress}

@@ -2028,3 +2028,83 @@ input[type=range].volume-bar::-moz-range-thumb {
 .chat-input button:hover {
     background: #45a049;
 }
+
+/* Room Layout */
+.room-container {
+    min-height: 100vh;
+    background: #121212;
+    color: white;
+}
+
+.room-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: #1e1e1e;
+    border-bottom: 1px solid #333;
+}
+
+.room-header h2 {
+    margin: 0;
+    font-size: 20px;
+}
+
+.room-info p {
+    margin: 5px 0 0;
+    font-size: 14px;
+    color: #B0B0B0;
+}
+
+.leave-btn {
+    background: #dc3545;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    color: white;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+.room-content {
+    display: flex;
+    gap: 20px;
+    padding: 20px;
+    flex-wrap: wrap;
+}
+
+.main-panel {
+    flex: 2;
+    min-width: 300px;
+}
+
+.sidebar {
+    flex: 1;
+    min-width: 250px;
+}
+
+.player-section {
+    margin-bottom: 20px;
+    background: #1e1e1e;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.chat-section {
+    background: #1e1e1e;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.now-playing-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #4CAF50;
+    padding: 10px 20px;
+    display: flex;
+    gap: 15px;
+    font-size: 14px;
+    z-index: 100;
+}

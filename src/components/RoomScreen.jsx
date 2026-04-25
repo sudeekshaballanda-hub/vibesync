@@ -18,15 +18,19 @@ export default function RoomScreen() {
     } = useRoom();
 
     const handleSendMessage = (text) => {
-        sendChatMessage(text);
+        if (sendChatMessage) {
+            sendChatMessage(text);
+        }
     };
+
+    console.log('RoomScreen render:', { isHost, roomCode, members, messages });
 
     return (
         <div className="room-container">
             <div className="room-header">
                 <div className="room-info">
-                    <h2>🎵 VibeSync Room</h2>
-                    <p>Room Code: <strong>{roomCode}</strong></p>
+                    <h2>🎵 VibeSync</h2>
+                    <p>Room: <strong>{roomCode}</strong></p>
                 </div>
                 <button onClick={leaveRoom} className="leave-btn">
                     🚪 Leave Room
@@ -40,19 +44,15 @@ export default function RoomScreen() {
                     </div>
                     <div className="chat-section">
                         <Chat
-                            messages={messages}
+                            messages={messages || []}
                             onSendMessage={handleSendMessage}
                             roomCode={roomCode}
+                            isHost={isHost}
                         />
                     </div>
                 </div>
                 <div className="sidebar">
-                    <MembersPanel
-                        members={members}
-                        hostName={hostName}
-                        isHost={isHost}
-                        roomCode={roomCode}
-                    />
+                    <MembersPanel />
                 </div>
             </div>
 
@@ -60,7 +60,7 @@ export default function RoomScreen() {
                 <div className="now-playing-bar">
                     <span>🎵 Now Playing:</span>
                     <span>{currentTrack.title}</span>
-                    {isPlaying ? '▶ Playing' : '⏸ Paused'}
+                    <span>{isPlaying ? '▶ Playing' : '⏸ Paused'}</span>
                 </div>
             )}
         </div>

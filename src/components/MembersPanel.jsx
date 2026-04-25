@@ -1,6 +1,9 @@
 import React from 'react';
+import { useRoom } from '../context/RoomContext';
 
-export default function MembersPanel({ members, hostName, isHost, roomCode }) {
+export default function MembersPanel() {
+    const { members, hostName, isHost, roomCode, myName } = useRoom();
+
     return (
         <div className="members-panel">
             <div className="members-header">
@@ -20,6 +23,7 @@ export default function MembersPanel({ members, hostName, isHost, roomCode }) {
                         <span className="member-icon">🎧</span>
                         <span className="member-name">{member.name}</span>
                         <span className="member-badge listener-badge">Listener</span>
+                        {member.name === myName && <span className="you-badge">(You)</span>}
                     </div>
                 ))}
             </div>
