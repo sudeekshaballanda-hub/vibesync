@@ -7,7 +7,7 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
     const [loading, setLoading] = useState(false);
     const [selectedVideo, setSelectedVideo] = useState(null);
 
-    // Your working API key
+    // Your working API key from console test
     const YOUTUBE_API_KEY = 'AIzaSyBtpAFBcBI916h_Py6_XspGMYx-5napnBY';
 
     const searchYouTube = async () => {
@@ -17,26 +17,30 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
         }
 
         setLoading(true);
+        console.log('Searching for:', searchQuery);
+
         try {
-            const response = await axios.get('https://www.googleapis.com/youtube/v3/search', {
-                params: {
-                    part: 'snippet',
-                    maxResults: 15,
-                    q: searchQuery,
-                    type: 'video',
-                    key: YOUTUBE_API_KEY
-                }
-            });
-            console.log('Search results:', response.data);
-            setResults(response.data.items || []);
+            const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(searchQuery)}&type=video&key=${YOUTUBE_API_KEY}`;
+            console.log('Request URL:', url);
+
+            const response = await axios.get(url);
+            console.log('Response:', response.data);
+
+            if (response.data.items) {
+                setResults(response.data.items);
+            } else {
+                setResults([]);
+            }
         } catch (error) {
-            console.error('YouTube search error:', error);
-            alert('Search failed: ' + (error.response?.data?.error?.message || 'Unknown error'));
+            console.error('Full error:', error);
+            console.error('Error response:', error.response?.data);
+            alert('Search failed: ' + (error.response?.data?.error?.message || 'Check console for details'));
         }
         setLoading(false);
     };
 
     const playVideo = (video) => {
+        console.log('Playing video:', video.snippet.title);
         const videoUrl = `https://www.youtube.com/embed/${video.id.videoId}?autoplay=1&mute=1`;
         setSelectedVideo({ ...video, embedUrl: videoUrl });
 
@@ -46,7 +50,7 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
                 id: video.id.videoId,
                 title: video.snippet.title,
                 artist: video.snippet.channelTitle,
-                thumbnail: video.snippet.thumbnails.medium.url,
+                thumbnail: video.snippet.thumbnails.medium?.url,
                 url: videoUrl
             });
         }
@@ -73,7 +77,7 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
                         {results.map((item) => (
                             <div key={item.id.videoId} className="track-card" onClick={() => playVideo(item)}>
                                 <img
-                                    src={item.snippet.thumbnails.medium?.url || 'https://via.placeholder.com/80'}
+                                    src={item.snippet.thumbnails?.medium?.url || 'https://via.placeholder.com/80'}
                                     alt={item.snippet.title}
                                     className="track-thumb"
                                 />

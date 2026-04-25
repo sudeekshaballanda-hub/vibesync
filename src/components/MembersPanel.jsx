@@ -7,27 +7,32 @@ export default function MembersPanel() {
     return (
         <div className="members-panel">
             <div className="members-header">
-                <h3>👥 Members</h3>
-                <span className="room-code">Room: {roomCode}</span>
+                <h3>👥 Members in Room</h3>
+                <span className="room-code">{roomCode}</span>
             </div>
             <div className="members-list">
-                <div className="member-item host">
+                {/* Host always displayed */}
+                <div className={`member-item ${isHost ? 'current-user' : ''}`}>
                     <span className="member-icon">👑</span>
                     <span className="member-name">{hostName || 'Host'}</span>
-                    <span className="member-badge">Host</span>
+                    <span className="member-badge host-badge">Host</span>
+                    {isHost && <span className="you-badge">(You)</span>}
                 </div>
-                {members.map((member) => (
-                    <div key={member.id} className="member-item listener">
+
+                {/* Listeners */}
+                {members && members.map((member) => (
+                    <div key={member.id} className="member-item listener-item">
                         <span className="member-icon">🎧</span>
                         <span className="member-name">{member.name}</span>
-                        <span className="member-badge">Listener</span>
+                        <span className="member-badge listener-badge">Listener</span>
                     </div>
                 ))}
             </div>
+
             {isHost && (
-                <div className="host-info">
-                    <p>✨ You are the host</p>
-                    <p>Share room code: <strong>{roomCode}</strong></p>
+                <div className="host-tip">
+                    <p>✨ You're the host!</p>
+                    <p>Share this code: <strong>{roomCode}</strong></p>
                 </div>
             )}
         </div>
