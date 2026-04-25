@@ -7,7 +7,7 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
     const [loading, setLoading] = useState(false);
     const [selectedVideo, setSelectedVideo] = useState(null);
 
-    const YOUTUBE_API_KEY = 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs'; // Replace with your key
+    const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs';// Replace with your key
 
     const searchYouTube = async () => {
         if (!searchQuery.trim()) return;
