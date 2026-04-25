@@ -12,29 +12,80 @@ export const RoomProvider = ({ children }) => {
     const [isHost, setIsHost] = useState(false);
     const [messages, setMessages] = useState([]);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [currentTime, setCurrentTime] = useState(0);
     const [connected, setConnected] = useState(false);
     const socketRef = useRef(null);
-    const audioRef = useRef(null);
 
     // Connect to backend
     useEffect(() => {
-        const wsUrl = 'wss://vibesync-backend.onrender.com'; // Replace with your Render URL
+        // Use your actual Render backend URL here
+        // For testing locally: 'ws://localhost:8080'
+        const wsUrl = 'https://vibesync-o3j5.onrender.com';
+
+        console.log('Connecting to WebSocket:', wsUrl);
+
         const socket = new WebSocket(wsUrl);
         socketRef.current = socket;
 
         socket.onopen = () => {
-            console.log('WebSocket connected');
+            console.log('✅ WebSocket connected');
             setConnected(true);
         };
 
         socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            handleSocketMessage(data);
+            try {
+                const data = JSON.parse(event.data);
+                console.log('📨 Received:', data.type, data);
+
+                switch (data.type) {
+                    case 'room-created':
+                        setRoomCode(data.roomCode);
+                        setIsHost(true);
+                        setHostName(data.hostName);
+                        break;
+
+                    case 'room-joined':
+                        setRoomCode(data.roomCode);
+                        setIsHost(false);
+                        setHostName(data.hostName);
+                        setMembers(data.members || []);
+                        setMessages(data.messages || []);
+                        break;
+
+                    case 'members-update':
+                        setMembers(data.members || []);
+                        break;
+
+                    case 'new-message':
+                        setMessages(prev => [...prev, data]);
+                        break;
+
+                    case 'track-loaded':
+                        setCurrentTrack(data.track);
+                        break;
+
+                    case 'play-sync':
+                        setIsPlaying(true);
+                        break;
+
+                    case 'pause-sync':
+                        setIsPlaying(false);
+                        break;
+
+                    default:
+                        console.log('Unknown message type:', data.type);
+                }
+            } catch (err) {
+                console.error('Error parsing message:', err);
+            }
         };
 
         socket.onclose = () => {
-            console.log('WebSocket disconnected');
+            console.log('🔌 WebSocket disconnected');
+            setConnected(false);
+        };
+
+        socket.onerror = (error) => {
+            console.error('WebSocket error:', error);
             setConnected(false);
         };
 
@@ -45,95 +96,30 @@ export const RoomProvider = ({ children }) => {
         };
     }, []);
 
-    const handleSocketMessage = (data) => {
-        switch (data.type) {
-            case 'room-state':
-                setCurrentTrack(data.currentTrack);
-                setIsPlaying(data.isPlaying);
-                setCurrentTime(data.currentTime);
-                setMessages(data.messages || []);
-                setHostName(data.hostName);
-                setMembers(data.listeners || []);
-                break;
-
-            case 'listener-joined':
-                setMembers(prev => [...prev, { id: data.id, name: data.name }]);
-                break;
-
-            case 'members-update':
-                setHostName(data.hostName);
-                setMembers(data.listeners || []);
-                break;
-
-            case 'track-loaded':
-                setCurrentTrack(data);
-                if (!isHost && audioRef.current) {
-                    audioRef.current.src = data.url;
-                }
-                break;
-
-            case 'sync-play':
-                if (!isHost) {
-                    setIsPlaying(true);
-                    if (audioRef.current) {
-                        audioRef.current.currentTime = 0;
-                        audioRef.current.play();
-                    }
-                }
-                break;
-
-            case 'sync-pause':
-                if (!isHost) {
-                    setIsPlaying(false);
-                    if (audioRef.current) {
-                        audioRef.current.pause();
-                    }
-                }
-                break;
-
-            case 'sync-seek':
-                if (!isHost && audioRef.current) {
-                    audioRef.current.currentTime = data.position / 1000;
-                    setCurrentTime(data.position);
-                }
-                break;
-
-            case 'new-message':
-                setMessages(prev => [...prev, data]);
-                break;
-
-            case 'host-disconnected':
-                alert('Host has left the room. You will be redirected.');
-                setRoomCode(null);
-                setIsHost(false);
-                setMembers([]);
-                break;
-
-            default:
-                console.log('Unknown message type:', data.type);
-        }
-    };
-
     const sendMessage = (type, data = {}) => {
         if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
             socketRef.current.send(JSON.stringify({ type, ...data }));
+            console.log('📤 Sent:', type);
+        } else {
+            console.warn('⚠️ WebSocket not connected, cannot send:', type);
         }
     };
 
     const createRoom = async (name) => {
-        const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
-        sendMessage('create-room', { code: roomCode, name });
-        setRoomCode(roomCode);
-        setIsHost(true);
-        setHostName(name);
-        setMembers([]);
-        return roomCode;
+        if (!connected) {
+            alert('Connecting to server... Please wait.');
+            return null;
+        }
+        sendMessage('create-room', { name });
+        return 'waiting';
     };
 
     const joinRoom = async (code, name) => {
+        if (!connected) {
+            alert('Connecting to server... Please wait.');
+            return;
+        }
         sendMessage('join-room', { code, name });
-        setRoomCode(code);
-        setIsHost(false);
     };
 
     const leaveRoom = () => {
@@ -142,30 +128,29 @@ export const RoomProvider = ({ children }) => {
         setIsHost(false);
         setMembers([]);
         setCurrentTrack(null);
+        setMessages([]);
     };
 
     const loadTrack = (track) => {
-        setCurrentTrack(track);
-        sendMessage('load-track', track);
+        sendMessage('load-track', { track, roomCode });
     };
 
     const play = () => {
         setIsPlaying(true);
-        sendMessage('play-command', {});
+        sendMessage('play', { roomCode });
     };
 
     const pause = () => {
         setIsPlaying(false);
-        sendMessage('pause-command', { position: currentTime });
+        sendMessage('pause', { roomCode });
     };
 
     const seek = (position) => {
-        setCurrentTime(position);
-        sendMessage('seek-command', { position });
+        sendMessage('seek', { roomCode, position });
     };
 
     const sendChatMessage = (text) => {
-        sendMessage('chat-message', { text, sender: null });
+        sendMessage('chat-message', { roomCode, text, sender: isHost ? 'Host' : 'Listener' });
     };
 
     const value = {
@@ -176,7 +161,6 @@ export const RoomProvider = ({ children }) => {
         isHost,
         messages,
         isPlaying,
-        currentTime,
         connected,
         createRoom,
         joinRoom,
