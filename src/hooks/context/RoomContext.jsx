@@ -1,263 +1,192 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
-import { useSignaling } from "../hooks/useSignaling";
-import { useClockSync } from "../hooks/useClockSync";
-import { useAudioSync } from "../hooks/useAudioSync";
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 
-const RoomContext = createContext(null);
+const RoomContext = createContext();
 
-export function RoomProvider({ children }) {
-    const { ws, connected, send } = useSignaling();
-    const { serverNow, localTimeForServer, offset, rtt, synced } = useClockSync(ws);
+export const useRoom = () => useContext(RoomContext);
 
+export const RoomProvider = ({ children }) => {
     const [roomCode, setRoomCode] = useState(null);
-    const [userId] = useState(() => Math.random().toString(36).slice(2, 10));
-    const [username, setUsername] = useState("");
-    const [isHost, setIsHost] = useState(false);
     const [members, setMembers] = useState([]);
-    const [chat, setChat] = useState([]);
-    const [inRoom, setInRoom] = useState(false);
+    const [hostName, setHostName] = useState(null);
     const [currentTrack, setCurrentTrack] = useState(null);
-    const [queue, setQueue] = useState([]);
-    const [notification, setNotification] = useState(null);
+    const [isHost, setIsHost] = useState(false);
+    const [messages, setMessages] = useState([]);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [connected, setConnected] = useState(false);
+    const socketRef = useRef(null);
+    const audioRef = useRef(null);
 
-    const audioSync = useAudioSync({
-        localTimeForServer: (serverTs) => serverTs - offset,
-        onPositionUpdate: null,
-    });
-
-    const notify = useCallback((msg, type = "info") => {
-        setNotification({ msg, type, id: Date.now() });
-        setTimeout(() => setNotification(null), 3000);
-    }, []);
-
-    // Report latency to server periodically
+    // Connect to backend
     useEffect(() => {
-        if (!connected || !inRoom || rtt === 0) return;
-        send({ type: "latency-report", latency: rtt });
-    }, [rtt, connected, inRoom, send]);
+        const wsUrl = 'wss://vibesync-backend.onrender.com'; // Replace with your Render URL
+        const socket = new WebSocket(wsUrl);
+        socketRef.current = socket;
 
-    // Handle all incoming server messages
-    useEffect(() => {
-        if (!ws) return;
-        const onMessage = async (event) => {
-            let msg;
-            try { msg = JSON.parse(event.data); } catch { return; }
-
-            switch (msg.type) {
-
-                case "joined": {
-                    setInRoom(true);
-                    setMembers(msg.roomInfo.members || []);
-                    // If server has active playback, sync to it
-                    const ps = msg.roomInfo.playbackState;
-                    if (ps?.trackUrl) {
-                        setCurrentTrack({ id: ps.trackId, url: ps.trackUrl, name: ps.trackName });
-                        await audioSync.loadTrack(ps.trackUrl);
-                        if (ps.isPlaying && ps.startedAt) {
-                            const serverPos = ps.position + (serverNow() - ps.startedAt) / 1000;
-                            audioSync.schedulePlay(serverNow() + 500, Math.max(0, serverPos));
-                        }
-                    }
-                    break;
-                }
-
-                case "members-update":
-                    setMembers(msg.members || []);
-                    break;
-
-                case "peer-joined":
-                    setMembers(prev => {
-                        if (prev.find(m => m.userId === msg.userId)) return prev;
-                        return [...prev, { userId: msg.userId, username: msg.username, isHost: msg.isHost, latency: 0 }];
-                    });
-                    notify(`${msg.username} joined the room`);
-                    break;
-
-                case "peer-left":
-                    setMembers(prev => prev.filter(m => m.userId !== msg.userId));
-                    notify(`${msg.username} left`);
-                    break;
-
-                case "host-left":
-                    notify("Host disconnected", "warning");
-                    break;
-
-                case "play": {
-                    if (!currentTrack && msg.trackUrl) {
-                        const track = { id: msg.trackId, url: msg.trackUrl, name: msg.trackName };
-                        setCurrentTrack(track);
-                        await audioSync.loadTrack(msg.trackUrl);
-                    }
-                    audioSync.schedulePlay(msg.scheduleAt - offset, msg.position);
-                    break;
-                }
-
-                case "pause":
-                    audioSync.schedulePause(msg.scheduleAt - offset, msg.position);
-                    break;
-
-                case "seek":
-                    audioSync.scheduleSeek(msg.scheduleAt - offset, msg.position, msg.isPlaying);
-                    break;
-
-                case "track-change": {
-                    const track = { id: msg.trackId, url: msg.trackUrl, name: msg.trackName };
-                    setCurrentTrack(track);
-                    audioSync.stopSource();
-                    const buf = await audioSync.loadTrack(msg.trackUrl);
-                    if (buf) audioSync.schedulePlay(msg.scheduleAt - offset, 0);
-                    break;
-                }
-
-                case "sync-state": {
-                    if (msg.trackUrl && (!currentTrack || currentTrack.url !== msg.trackUrl)) {
-                        const track = { id: msg.trackId, url: msg.trackUrl, name: msg.trackName };
-                        setCurrentTrack(track);
-                        await audioSync.loadTrack(msg.trackUrl);
-                    }
-                    if (msg.isPlaying) {
-                        audioSync.schedulePlay(msg.scheduleAt - offset, msg.position);
-                    } else {
-                        audioSync.schedulePause(Date.now(), msg.position);
-                    }
-                    break;
-                }
-
-                case "chat":
-                    setChat(prev => [...prev.slice(-199), {
-                        userId: msg.userId,
-                        username: msg.username,
-                        text: msg.text,
-                        time: msg.time,
-                    }]);
-                    break;
-
-                default: break;
-            }
+        socket.onopen = () => {
+            console.log('WebSocket connected');
+            setConnected(true);
         };
 
-        ws.addEventListener("message", onMessage);
-        return () => ws.removeEventListener("message", onMessage);
-    }, [ws, audioSync, currentTrack, offset, serverNow, notify]);
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            handleSocketMessage(data);
+        };
 
-    // ── Actions ────────────────────────────────────────────────────────────────
+        socket.onclose = () => {
+            console.log('WebSocket disconnected');
+            setConnected(false);
+        };
 
-    const createRoom = useCallback((name) => {
-        const code = Math.random().toString(36).slice(2, 8).toUpperCase();
-        setUsername(name);
-        setRoomCode(code);
+        return () => {
+            if (socket.readyState === WebSocket.OPEN) {
+                socket.close();
+            }
+        };
+    }, []);
+
+    const handleSocketMessage = (data) => {
+        switch (data.type) {
+            case 'room-state':
+                setCurrentTrack(data.currentTrack);
+                setIsPlaying(data.isPlaying);
+                setCurrentTime(data.currentTime);
+                setMessages(data.messages || []);
+                setHostName(data.hostName);
+                setMembers(data.listeners || []);
+                break;
+
+            case 'listener-joined':
+                setMembers(prev => [...prev, { id: data.id, name: data.name }]);
+                break;
+
+            case 'members-update':
+                setHostName(data.hostName);
+                setMembers(data.listeners || []);
+                break;
+
+            case 'track-loaded':
+                setCurrentTrack(data);
+                if (!isHost && audioRef.current) {
+                    audioRef.current.src = data.url;
+                }
+                break;
+
+            case 'sync-play':
+                if (!isHost) {
+                    setIsPlaying(true);
+                    if (audioRef.current) {
+                        audioRef.current.currentTime = 0;
+                        audioRef.current.play();
+                    }
+                }
+                break;
+
+            case 'sync-pause':
+                if (!isHost) {
+                    setIsPlaying(false);
+                    if (audioRef.current) {
+                        audioRef.current.pause();
+                    }
+                }
+                break;
+
+            case 'sync-seek':
+                if (!isHost && audioRef.current) {
+                    audioRef.current.currentTime = data.position / 1000;
+                    setCurrentTime(data.position);
+                }
+                break;
+
+            case 'new-message':
+                setMessages(prev => [...prev, data]);
+                break;
+
+            case 'host-disconnected':
+                alert('Host has left the room. You will be redirected.');
+                setRoomCode(null);
+                setIsHost(false);
+                setMembers([]);
+                break;
+
+            default:
+                console.log('Unknown message type:', data.type);
+        }
+    };
+
+    const sendMessage = (type, data = {}) => {
+        if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+            socketRef.current.send(JSON.stringify({ type, ...data }));
+        }
+    };
+
+    const createRoom = async (name) => {
+        const roomCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+        sendMessage('create-room', { code: roomCode, name });
+        setRoomCode(roomCode);
         setIsHost(true);
-        audioSync.ensureCtx();
-        send({ type: "join", roomCode: code, userId, username: name, isHost: true });
-        return code;
-    }, [send, userId, audioSync]);
+        setHostName(name);
+        setMembers([]);
+        return roomCode;
+    };
 
-    const joinRoom = useCallback((code, name) => {
-        setUsername(name);
-        setRoomCode(code.toUpperCase());
+    const joinRoom = async (code, name) => {
+        sendMessage('join-room', { code, name });
+        setRoomCode(code);
         setIsHost(false);
-        audioSync.ensureCtx();
-        send({ type: "join", roomCode: code.toUpperCase(), userId, username: name, isHost: false });
-        // Request sync after a moment
-        setTimeout(() => send({ type: "sync-request" }), 500);
-    }, [send, userId, audioSync]);
+    };
 
-    const leaveRoom = useCallback(() => {
-        send({ type: "leave" });
-        audioSync.stopSource();
-        setInRoom(false);
+    const leaveRoom = () => {
+        sendMessage('leave-room', {});
         setRoomCode(null);
         setIsHost(false);
         setMembers([]);
-        setChat([]);
         setCurrentTrack(null);
-        setQueue([]);
-    }, [send, audioSync]);
+    };
 
-    const play = useCallback(() => {
-        if (!isHost) return;
-        const pos = audioSync.getCurrentPosition();
-        send({
-            type: "play",
-            position: pos,
-            trackId: currentTrack?.id,
-            trackUrl: currentTrack?.url,
-            trackName: currentTrack?.name,
-        });
-    }, [isHost, send, audioSync, currentTrack]);
-
-    const pause = useCallback(() => {
-        if (!isHost) return;
-        send({ type: "pause", position: audioSync.getCurrentPosition() });
-    }, [isHost, send, audioSync]);
-
-    const seek = useCallback((position) => {
-        if (!isHost) return;
-        send({ type: "seek", position });
-    }, [isHost, send]);
-
-    const loadTrackAsHost = useCallback(async (track) => {
-        if (!isHost) return;
+    const loadTrack = (track) => {
         setCurrentTrack(track);
-        await audioSync.loadTrack(track.url);
-        send({
-            type: "track-change",
-            trackId: track.id,
-            trackUrl: track.url,
-            trackName: track.name,
-        });
-    }, [isHost, audioSync, send]);
+        sendMessage('load-track', track);
+    };
 
-    const addToQueue = useCallback((track) => {
-        setQueue(prev => [...prev, track]);
-        if (!currentTrack) loadTrackAsHost(track);
-    }, [currentTrack, loadTrackAsHost]);
+    const play = () => {
+        setIsPlaying(true);
+        sendMessage('play-command', {});
+    };
 
-    const sendChat = useCallback((text) => {
-        send({ type: "chat", text });
-        setChat(prev => [...prev.slice(-199), {
-            userId,
-            username,
-            text,
-            time: Date.now(),
-            isSelf: true,
-        }]);
-    }, [send, userId, username]);
+    const pause = () => {
+        setIsPlaying(false);
+        sendMessage('pause-command', { position: currentTime });
+    };
 
-    const requestSync = useCallback(() => {
-        send({ type: "sync-request" });
-    }, [send]);
+    const seek = (position) => {
+        setCurrentTime(position);
+        sendMessage('seek-command', { position });
+    };
 
-    return (
-        <RoomContext.Provider value={{
-            // connection
-            connected, synced, offset, rtt,
-            // room
-            roomCode, userId, username, isHost, inRoom,
-            members, chat, notification,
-            // track
-            currentTrack, queue,
-            // audio state
-            isPlaying: audioSync.isPlaying,
-            position: audioSync.position,
-            duration: audioSync.duration,
-            loading: audioSync.loading,
-            volume: audioSync.volume,
-            getFrequencyData: audioSync.getFrequencyData,
-            // actions
-            createRoom, joinRoom, leaveRoom,
-            play, pause, seek,
-            loadTrackAsHost, addToQueue,
-            setVolume: audioSync.setVolume,
-            sendChat, requestSync,
-        }}>
-            {children}
-        </RoomContext.Provider>
-    );
-}
+    const sendChatMessage = (text) => {
+        sendMessage('chat-message', { text, sender: null });
+    };
 
-export const useRoom = () => {
-    const ctx = useContext(RoomContext);
-    if (!ctx) throw new Error("useRoom must be used within RoomProvider");
-    return ctx;
+    const value = {
+        roomCode,
+        members,
+        hostName,
+        currentTrack,
+        isHost,
+        messages,
+        isPlaying,
+        currentTime,
+        connected,
+        createRoom,
+        joinRoom,
+        leaveRoom,
+        loadTrack,
+        play,
+        pause,
+        seek,
+        sendChatMessage,
+    };
+
+    return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>;
 };
