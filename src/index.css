@@ -2108,3 +2108,45 @@ input[type=range].volume-bar::-moz-range-thumb {
     font-size: 14px;
     z-index: 100;
 }
+
+/* Music Player */
+.music-player-container {
+    background: #1e1e1e;
+    border-radius: 12px;
+    margin-bottom: 20px;
+}
+
+.search-bar {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 20px;
+}
+
+.search-bar input {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #333;
+    background: #2a2a2a;
+    color: white;
+}
+
+.search-bar button {
+    padding: 12px 24px;
+    background: #FF0000;
+    border: none;
+    border-radius: 8px;
+    color: white;
+    cursor: pointer;
+}
+
+.search-results {
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.source-buttons {
+    display: flex;
+    justify-content: center;
+    gap: 20px;
+}
