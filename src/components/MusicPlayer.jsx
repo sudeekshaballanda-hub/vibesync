@@ -9,9 +9,21 @@ export default function MusicPlayer() {
     const handleTrackSelect = (track) => {
         if (isHost) {
             loadTrack(track);
-            console.log('Track loaded:', track);
         }
     };
+
+    // If not host, show "Waiting for Host" message
+    if (!isHost) {
+        return (
+            <div className="listener-music-view">
+                <div className="waiting-host">
+                    <span className="host-icon">🎧</span>
+                    <h3>Waiting for Host</h3>
+                    <p>The host will choose and play music for everyone</p>
+                </div>
+            </div>
+        );
+    }
 
     if (!source) {
         return (

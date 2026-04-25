@@ -1620,3 +1620,31 @@ input[type=range].volume-bar::-moz-range-thumb {
     color: #666;
     padding: 40px;
 }
+
+.listener-music-view {
+    text-align: center;
+    padding: 60px 20px;
+}
+
+.waiting-host {
+    background: #1e1e1e;
+    border-radius: 20px;
+    padding: 40px;
+}
+
+.host-icon {
+    font-size: 64px;
+    display: block;
+    margin-bottom: 20px;
+}
+
+.waiting-host h3 {
+    color: #FFF;
+    font-size: 24px;
+    margin-bottom: 10px;
+}
+
+.waiting-host p {
+    color: #B0B0B0;
+    font-size: 16px;
+}
