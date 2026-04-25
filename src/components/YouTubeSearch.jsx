@@ -7,8 +7,8 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
     const [loading, setLoading] = useState(false);
     const [selectedVideo, setSelectedVideo] = useState(null);
 
-    // Your working API key from console test
-    const YOUTUBE_API_KEY = 'AIzaSyBtpAFBcBI916h_Py6_XspGMYx-5napnBY';
+    // USE THE API KEY THAT WORKED IN CONSOLE TEST
+    const YOUTUBE_API_KEY = 'AIzaSyBtpAFBcBI9l6h_Py6_XspGMyX-5napnBY';
 
     const searchYouTube = async () => {
         if (!searchQuery.trim()) {
@@ -30,11 +30,13 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
                 setResults(response.data.items);
             } else {
                 setResults([]);
+                alert('No results found');
             }
         } catch (error) {
             console.error('Full error:', error);
             console.error('Error response:', error.response?.data);
-            alert('Search failed: ' + (error.response?.data?.error?.message || 'Check console for details'));
+            const errorMessage = error.response?.data?.error?.message || 'Unknown error';
+            alert(`Search failed: ${errorMessage}`);
         }
         setLoading(false);
     };
@@ -50,7 +52,7 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
                 id: video.id.videoId,
                 title: video.snippet.title,
                 artist: video.snippet.channelTitle,
-                thumbnail: video.snippet.thumbnails.medium?.url,
+                thumbnail: video.snippet.thumbnails?.medium?.url,
                 url: videoUrl
             });
         }
