@@ -7,10 +7,14 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
     const [loading, setLoading] = useState(false);
     const [selectedVideo, setSelectedVideo] = useState(null);
 
-    const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs';// Replace with your key
+    // Your working API key
+    const YOUTUBE_API_KEY = 'AIzaSyBtpAFBcBI916h_Py6_XspGMYx-5napnBY';
 
     const searchYouTube = async () => {
-        if (!searchQuery.trim()) return;
+        if (!searchQuery.trim()) {
+            alert('Please enter a search term');
+            return;
+        }
 
         setLoading(true);
         try {
@@ -20,26 +24,20 @@ const YouTubeSearch = ({ onSelectTrack, isHost }) => {
                     maxResults: 15,
                     q: searchQuery,
                     type: 'video',
-                    videoCategoryId: '10',
                     key: YOUTUBE_API_KEY
                 }
             });
-            setResults(response.data.items);
+            console.log('Search results:', response.data);
+            setResults(response.data.items || []);
         } catch (error) {
             console.error('YouTube search error:', error);
-            alert('Search failed. Check console for details.');
+            alert('Search failed: ' + (error.response?.data?.error?.message || 'Unknown error'));
         }
         setLoading(false);
     };
 
     const playVideo = (video) => {
-        if (!video || !video.id || !video.id.videoId) {
-            console.error('Invalid video:', video);
-            alert('Cannot play this video. Try another.');
-            return;
-        }
-
-        const videoUrl = `https://www.youtube.com/embed/${video.id.videoId}?autoplay=1&mute=1&enablejsapi=1`;
+        const videoUrl = `https://www.youtube.com/embed/${video.id.videoId}?autoplay=1&mute=1`;
         setSelectedVideo({ ...video, embedUrl: videoUrl });
 
         if (isHost && onSelectTrack) {
