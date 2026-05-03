@@ -1,18 +1,32 @@
-import React, { useState } from "react";
-import { RoomProvider } from "./context/RoomContext";
-import Landing from "./components/Landing";
-import RoomScreen from "./components/RoomScreen";
+import React from 'react';
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { RoomProvider } from './context/RoomContext';
+import Landing from './components/Landing';
+import RoomScreen from './components/RoomScreen';
+import './index.css';
 
 function App() {
-    const [screen, setScreen] = useState("landing");
+    const [inRoom, setInRoom] = React.useState(false);
+
+    const handleEnterRoom = () => {
+        setInRoom(true);
+    };
+
+    const handleLeaveRoom = () => {
+        setInRoom(false);
+    };
 
     return (
         <RoomProvider>
-            {screen === "landing" ? (
-                <Landing onEnterRoom={() => setScreen("room")} />
-            ) : (
-                <RoomScreen onLeave={() => setScreen("landing")} />
-            )}
+            <BrowserRouter>
+                <div className="App">
+                    {!inRoom ? (
+                        <Landing onEnterRoom={handleEnterRoom} />
+                    ) : (
+                        <RoomScreen onLeaveRoom={handleLeaveRoom} />
+                    )}
+                </div>
+            </BrowserRouter>
         </RoomProvider>
     );
 }
