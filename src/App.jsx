@@ -80,7 +80,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [selectedSource, setSelectedSource] = useState('youtube');
     const [selectedSong, setSelectedSong] = useState(null);
 
-    const YOUTUBE_API_KEY = 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs';
+    //const YOUTUBE_API_KEY = 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs';
 
     const searchYouTube = async () => {
         if (!searchQuery.trim()) {
