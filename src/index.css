@@ -427,3 +427,89 @@ body {
     background: #4CAF50;
     border-radius: 10px;
 }
+
+/* Mobile Responsive Styles */
+@media (max-width: 768px) {
+    .three-columns {
+        grid-template-columns: 1fr;
+        gap: 16px;
+        padding: 16px;
+        height: auto;
+    }
+
+    .column {
+        margin-bottom: 0;
+    }
+
+    .room-header {
+        flex-direction: column;
+        gap: 12px;
+        text-align: center;
+    }
+
+    .logo-section {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .room-badge {
+        font-size: 12px;
+    }
+
+    .leave-btn {
+        width: 100%;
+        padding: 10px;
+    }
+
+    .search-bar {
+        flex-direction: column;
+    }
+
+    .search-bar button {
+        width: 100%;
+        padding: 12px;
+    }
+
+    .source-tabs {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .source-tab {
+        width: 100%;
+    }
+
+    .member-item {
+        padding: 10px;
+    }
+
+    .chat-input-area {
+        flex-direction: column;
+    }
+
+    .chat-input-area button {
+        width: 100%;
+    }
+
+    .player-container iframe {
+        height: 250px;
+    }
+
+    .player-header {
+        flex-direction: column;
+        gap: 12px;
+        text-align: center;
+    }
+}
+
+/* For tablets */
+@media (min-width: 769px) and (max-width: 1024px) {
+    .three-columns {
+        grid-template-columns: 1fr 280px;
+        gap: 16px;
+    }
+
+    .chat-column {
+        grid-column: span 2;
+    }
+}
