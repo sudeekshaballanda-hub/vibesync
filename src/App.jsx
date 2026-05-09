@@ -1,5 +1,6 @@
-﻿import React, { useState } from 'react';
+﻿import React, { useState, useEffect } from 'react';
 import { RoomProvider, useRoom } from './context/RoomContext';
+import io from 'socket.io-client';
 import './index.css';
 
 // Landing Component
@@ -70,7 +71,7 @@ function Landing({ onEnterRoom }) {
     );
 }
 
-// RoomScreen Component with 3 columns
+// RoomScreen Component with 3 columns and sync
 function RoomScreen({ roomCode, isHost, onLeave }) {
     const { hostName, members, messages, sendChatMessage } = useRoom();
     const [chatInput, setChatInput] = useState('');
@@ -80,7 +81,72 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [selectedSource, setSelectedSource] = useState('youtube');
     const [selectedSong, setSelectedSong] = useState(null);
 
-    //const YOUTUBE_API_KEY = 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs';
+    // Sync related states
+    const [syncSocket, setSyncSocket] = useState(null);
+    const [isSynced, setIsSynced] = useState(false);
+    const [syncStatus, setSyncStatus] = useState('Not Connected');
+
+    const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
+
+    // Connect to backend server
+    useEffect(() => {
+        const socket = io('https://vibesync-backend.onrender.com');
+        setSyncSocket(socket);
+
+        socket.on('connect', () => {
+            console.log('Connected to sync server');
+            setSyncStatus('Connected');
+        });
+
+        socket.on('room-created', () => {
+            setSyncStatus('Room Created - Ready to Sync');
+        });
+
+        socket.on('room-joined', () => {
+            setSyncStatus('Joined Room - Waiting for Host');
+        });
+
+        socket.on('listener-joined', ({ name }) => {
+            console.log(`${name} joined`);
+        });
+
+        socket.on('song-playing', ({ song }) => {
+            if (!isHost) {
+                setSelectedSong(song);
+                alert(`Host is playing: ${song.snippet.title}`);
+            }
+        });
+
+        socket.on('host-left', () => {
+            alert('Host has left the room');
+            onLeave();
+        });
+
+        socket.on('error', (msg) => {
+            alert(msg);
+        });
+
+        return () => {
+            if (socket) socket.disconnect();
+        };
+    }, [isHost, onLeave]);
+
+    // Start sync function
+    const startSync = () => {
+        if (!syncSocket) {
+            alert('Connecting to server...');
+            return;
+        }
+
+        if (isHost) {
+            syncSocket.emit('create-room', { roomCode, hostName });
+            setIsSynced(true);
+            alert('Sync started! Share the room code with friends.');
+        } else {
+            syncSocket.emit('join-room', { roomCode, listenerName: hostName });
+            setIsSynced(true);
+        }
+    };
 
     const searchYouTube = async () => {
         if (!searchQuery.trim()) {
@@ -89,21 +155,12 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
 
         setSearchLoading(true);
-        console.log('Searching for:', searchQuery);
-
-        // USE THIS API KEY - It's working
-        const API_KEY = 'AIzaSyDCyZiD3gFAbyXsQdAgYQ-7jwA73tSnqUs';
 
         try {
-            const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(searchQuery)}&type=video&key=${API_KEY}`;
-
-            console.log('Calling URL:', url);
+            const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(searchQuery)}&type=video&key=${YOUTUBE_API_KEY}`;
 
             const response = await fetch(url);
             const data = await response.json();
-
-            console.log('Response status:', response.status);
-            console.log('Data:', data);
 
             if (response.status === 200 && data.items) {
                 setSearchResults(data.items);
@@ -112,7 +169,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 }
             } else {
                 console.error('API Error:', data.error);
-                alert(`Error: ${data.error?.message || 'Something went wrong'}`);
+                alert('Search failed. Check console for details.');
                 setSearchResults([]);
             }
         } catch (err) {
@@ -124,6 +181,10 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     const playSong = (video) => {
         setSelectedSong(video);
+        if (isSynced && isHost && syncSocket) {
+            syncSocket.emit('play-song', { roomCode, song: video });
+            alert(`Playing: ${video.snippet.title} - Broadcasting to all listeners!`);
+        }
     };
 
     const sendMessage = () => {
@@ -159,16 +220,27 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     return (
         <div className="room">
-            {/* Header */}
             <div className="room-header">
                 <div className="logo-section">
                     <h1>🎵 VibeSync</h1>
                     <span className="room-badge">Room: {roomCode}</span>
                 </div>
-                <button onClick={onLeave} className="leave-btn">🚪 Leave Room</button>
+                <div className="header-buttons">
+                    <button
+                        onClick={startSync}
+                        disabled={isSynced}
+                        className={`sync-btn ${isSynced ? 'synced' : ''}`}
+                    >
+                        {isSynced ? '✅ Synced' : '🔗 Start Sync'}
+                    </button>
+                    <button onClick={onLeave} className="leave-btn">🚪 Leave Room</button>
+                </div>
             </div>
 
-            {/* 3 Column Layout */}
+            <div className="sync-status-bar">
+                Status: {syncStatus} {isSynced && '✅ Synced'}
+            </div>
+
             <div className="three-columns">
 
                 {/* COLUMN 1: SEARCH */}
