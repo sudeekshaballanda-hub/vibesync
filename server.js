@@ -5,31 +5,36 @@ const cors = require('cors');
 
 const app = express();
 
-// CORS for Express routes - Allow all origins for testing
 app.use(cors({
     origin: '*',
     methods: ["GET", "POST", "OPTIONS"],
     credentials: false
 }));
 
-// Test route
+// Root route
 app.get('/', (req, res) => {
-    res.json({ message: 'VibeSync Backend is running!', status: 'ok' });
+    res.json({
+        message: 'VibeSync Backend is running!',
+        status: 'ok',
+        socketIoPath: '/socket.io/',
+        connectTo: 'https://vibesync-backend.onrender.com with path /socket.io/'
+    });
 });
+
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 const server = http.createServer(app);
 
-// Socket.io with all transports enabled
 const io = socketIo(server, {
+    path: '/socket.io/',  // ← CRITICAL: Explicit path
     cors: {
         origin: "*",
         methods: ["GET", "POST"],
         credentials: false
     },
-    transports: ['websocket', 'polling'],  // Critical: both transports
+    transports: ['websocket', 'polling'],
     allowEIO3: true,
     pingTimeout: 60000,
     pingInterval: 25000
@@ -40,7 +45,6 @@ const rooms = new Map();
 io.on('connection', (socket) => {
     console.log('✅ Connected:', socket.id, 'Transport:', socket.conn.transport.name);
 
-    // Create room
     socket.on('create-room', ({ roomCode, hostName }) => {
         socket.join(roomCode);
         rooms.set(roomCode, {
@@ -55,7 +59,6 @@ io.on('connection', (socket) => {
         socket.emit('room-created', { roomCode });
     });
 
-    // Join room
     socket.on('join-room', ({ roomCode, listenerName }) => {
         const room = rooms.get(roomCode);
         if (room) {
@@ -75,7 +78,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Play song
     socket.on('play-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
@@ -109,5 +111,6 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server on port ${PORT}`);
+    console.log(`📍 Socket.io path: /socket.io/`);
     console.log(`📍 Transports: websocket, polling`);
 });
