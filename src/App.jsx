@@ -91,21 +91,34 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     // Connect to backend server
     useEffect(() => {
-        const socket = io('https://vibesync-backend.onrender.com', {
+        // Use wss:// for secure WebSocket
+        const BACKEND_URL = 'wss://vibesync-backend.onrender.com';
+
+        console.log('Connecting to:', BACKEND_URL);
+
+        const socket = io(BACKEND_URL, {
             transports: ['websocket', 'polling'],
             reconnection: true,
-            reconnectionAttempts: 5
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000,
+            timeout: 30000,
+            path: '/socket.io'
         });
 
         setSyncSocket(socket);
 
         socket.on('connect', () => {
-            console.log('Connected to sync server');
+            console.log('✅ Connected to sync server');
             setSyncStatus('Connected');
         });
 
+        socket.on('disconnect', () => {
+            console.log('❌ Disconnected');
+            setSyncStatus('Disconnected');
+        });
+
         socket.on('connect_error', (error) => {
-            console.error('Connection error:', error);
+            console.error('Connection error:', error.message);
             setSyncStatus('Connection failed');
         });
 
