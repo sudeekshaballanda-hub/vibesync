@@ -96,18 +96,20 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         console.log('🔌 Connecting to backend:', BACKEND_URL);
 
         const socket = io(BACKEND_URL, {
-            transports: ['websocket', 'polling'],  // Try WebSocket first, fallback to polling
+            path: '/socket.io/',  // ← ADD THIS LINE (explicit path)
+            transports: ['websocket', 'polling'],
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             reconnectionAttempts: 10,
             timeout: 30000,
-            forceNew: true
+            forceNew: true,
+            secure: true,  // ← ADD THIS
+            rejectUnauthorized: false  // ← ADD THIS for HTTPS
         });
 
         setSyncSocket(socket);
 
-        // Connection events
         socket.on('connect', () => {
             console.log('✅ Socket connected! Transport:', socket.io.engine.transport.name);
             setSyncStatus('Connected');
@@ -119,7 +121,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         });
 
         socket.on('connect_error', (error) => {
-            console.error('Connection error:', error.message);
+            console.error('❌ Connection error:', error);
+            console.error('Error message:', error.message);
+            console.error('Error data:', error.data);
             setSyncStatus('Connection failed - Retrying...');
         });
 

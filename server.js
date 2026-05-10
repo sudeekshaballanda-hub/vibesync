@@ -28,16 +28,19 @@ app.get('/health', (req, res) => {
 const server = http.createServer(app);
 
 const io = socketIo(server, {
-    path: '/socket.io/',  // ← CRITICAL: Explicit path
+    path: '/socket.io/',  // ← Explicit path
     cors: {
         origin: "*",
         methods: ["GET", "POST"],
-        credentials: false
+        credentials: false,
+        allowedHeaders: ["my-custom-header"]
     },
     transports: ['websocket', 'polling'],
     allowEIO3: true,
+    allowEIO4: true,  // ← ADD THIS
     pingTimeout: 60000,
-    pingInterval: 25000
+    pingInterval: 25000,
+    maxHttpBufferSize: 1e6  // ← ADD THIS (1MB limit)
 });
 
 const rooms = new Map();
