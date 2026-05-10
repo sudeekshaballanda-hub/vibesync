@@ -4,14 +4,28 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-app.use(cors());
+
+// Enable CORS for all origins
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
 const server = http.createServer(app);
 const io = socketIo(server, {
     cors: {
         origin: "*",
-        methods: ["GET", "POST"]
-    }
+        methods: ["GET", "POST"],
+        credentials: true,
+        allowedHeaders: ["Content-Type"]
+    },
+    transports: ['websocket', 'polling']
+});
+
+// Simple test route
+app.get('/', (req, res) => {
+    res.json({ message: 'VibeSync Backend is running!' });
 });
 
 // Store rooms and their data
@@ -21,7 +35,7 @@ io.on('connection', (socket) => {
     console.log('✅ New client connected:', socket.id);
 
     // Create room (Host)
-    socket.on('create-room', ({ roomCode, hostName }, callback) => {
+    socket.on('create-room', ({ roomCode, hostName }) => {
         socket.join(roomCode);
         rooms.set(roomCode, {
             hostId: socket.id,
@@ -34,12 +48,11 @@ io.on('connection', (socket) => {
         socket.data.isHost = true;
 
         console.log(`📢 Room created: ${roomCode} by ${hostName}`);
-        if (callback) callback({ success: true, roomCode });
-        else socket.emit('room-created', { roomCode });
+        socket.emit('room-created', { roomCode });
     });
 
     // Join room (Listener)
-    socket.on('join-room', ({ roomCode, listenerName }, callback) => {
+    socket.on('join-room', ({ roomCode, listenerName }) => {
         const room = rooms.get(roomCode);
 
         if (room) {
@@ -50,7 +63,10 @@ io.on('connection', (socket) => {
             socket.data.name = listenerName;
 
             // Notify host
-            io.to(room.hostId).emit('listener-joined', { name: listenerName, count: room.listeners.length });
+            io.to(room.hostId).emit('listener-joined', {
+                name: listenerName,
+                count: room.listeners.length
+            });
 
             // Notify all listeners about updated member list
             io.to(roomCode).emit('members-update', {
@@ -59,12 +75,10 @@ io.on('connection', (socket) => {
             });
 
             console.log(`👤 ${listenerName} joined room ${roomCode}`);
-            if (callback) callback({ success: true, roomCode });
-            else socket.emit('room-joined', { roomCode });
+            socket.emit('room-joined', { roomCode });
         } else {
             console.log(`❌ Room not found: ${roomCode}`);
-            if (callback) callback({ success: false, error: 'Room not found' });
-            else socket.emit('error', 'Room not found');
+            socket.emit('error', 'Room not found');
         }
     });
 
@@ -86,26 +100,11 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Get current room state
-    socket.on('get-room-state', ({ roomCode }) => {
-        const room = rooms.get(roomCode);
-        if (room) {
-            socket.emit('room-state', {
-                currentSong: room.currentSong,
-                isPlaying: room.isPlaying,
-                hostName: room.hostName,
-                listeners: room.listeners
-            });
-        }
-    });
-
     // Disconnect
     socket.on('disconnect', () => {
         console.log('❌ Client disconnected:', socket.id);
 
-        // Find and clean up rooms
         for (const [code, room] of rooms.entries()) {
-            // If host disconnected
             if (room.hostId === socket.id) {
                 io.to(code).emit('host-left', { message: 'Host has left the room' });
                 rooms.delete(code);
@@ -113,13 +112,10 @@ io.on('connection', (socket) => {
                 break;
             }
 
-            // If listener disconnected
             const listenerIndex = room.listeners.findIndex(l => l.id === socket.id);
             if (listenerIndex !== -1) {
                 const removedListener = room.listeners.splice(listenerIndex, 1);
                 console.log(`👋 ${removedListener[0]?.name} left room ${code}`);
-
-                // Notify everyone about updated members
                 io.to(code).emit('members-update', {
                     hostName: room.hostName,
                     listeners: room.listeners
@@ -131,7 +127,7 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 VibeSync Sync Server running on port ${PORT}`);
-    console.log(`📍 WebSocket endpoint: ws://localhost:${PORT}`);
+    console.log(`📍 WebSocket endpoint: ws://0.0.0.0:${PORT}`);
 });
