@@ -5,27 +5,33 @@ const cors = require('cors');
 
 const app = express();
 
-// Enable CORS for all origins
+// CORS for Express routes
 app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    origin: ["https://vibesync-alpha.vercel.app", "http://localhost:3000", "http://localhost:3001"],
+    methods: ["GET", "POST", "OPTIONS"],
+    credentials: true
 }));
 
-const server = http.createServer(app);
-const io = socketIo(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"],
-        credentials: true,
-        allowedHeaders: ["Content-Type"]
-    },
-    transports: ['websocket', 'polling']
-});
-
-// Simple test route
+// Test route
 app.get('/', (req, res) => {
     res.json({ message: 'VibeSync Backend is running!' });
+});
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+const server = http.createServer(app);
+
+// Socket.io with proper CORS and transports
+const io = socketIo(server, {
+    cors: {
+        origin: ["https://vibesync-alpha.vercel.app", "http://localhost:3000", "http://localhost:3001"],
+        methods: ["GET", "POST"],
+        credentials: true,
+        allowedHeaders: ["Content-Type", "Authorization"]
+    },
+    transports: ['websocket', 'polling'],  // ← Important fallback
+    allowEIO3: true
 });
 
 // Store rooms and their data
@@ -33,6 +39,7 @@ const rooms = new Map();
 
 io.on('connection', (socket) => {
     console.log('✅ New client connected:', socket.id);
+    console.log('Transport:', socket.conn.transport.name);
 
     // Create room (Host)
     socket.on('create-room', ({ roomCode, hostName }) => {
@@ -100,6 +107,19 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Get room state
+    socket.on('get-room-state', ({ roomCode }) => {
+        const room = rooms.get(roomCode);
+        if (room) {
+            socket.emit('room-state', {
+                currentSong: room.currentSong,
+                isPlaying: room.isPlaying,
+                hostName: room.hostName,
+                listeners: room.listeners
+            });
+        }
+    });
+
     // Disconnect
     socket.on('disconnect', () => {
         console.log('❌ Client disconnected:', socket.id);
@@ -130,4 +150,6 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 VibeSync Sync Server running on port ${PORT}`);
     console.log(`📍 WebSocket endpoint: ws://0.0.0.0:${PORT}`);
+    console.log(`📍 CORS enabled for vercel.app and localhost`);
+    console.log(`📍 Transports: websocket, polling`);
 });
