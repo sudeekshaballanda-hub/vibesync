@@ -10,12 +10,16 @@ export const RoomProvider = ({ children }) => {
   const [hostName, setHostName] = useState(null);
   const [isHost, setIsHost] = useState(false);
   const [messages, setMessages] = useState([]);
+  const [currentTrack, setCurrentTrack] = useState(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   const createRoom = (name) => {
     const code = Math.random().toString(36).substring(2, 8).toUpperCase();
     setRoomCode(code);
     setIsHost(true);
     setHostName(name);
+    setMembers([]);
+    setMessages([]);
     return code;
   };
 
@@ -23,8 +27,7 @@ export const RoomProvider = ({ children }) => {
     setRoomCode(code);
     setIsHost(false);
     setHostName(name);
-    // Add listener to members list
-    setMembers(prev => [...prev, { id: Date.now(), name }]);
+    setMessages([]);
   };
 
   const sendChatMessage = (text) => {
@@ -41,20 +44,65 @@ export const RoomProvider = ({ children }) => {
     setIsHost(false);
     setMembers([]);
     setMessages([]);
+    setCurrentTrack(null);
+    setIsPlaying(false);
+  };
+
+  const loadTrack = (track) => {
+    setCurrentTrack(track);
+  };
+
+  const playTrack = () => {
+    setIsPlaying(true);
+  };
+
+  const pauseTrack = () => {
+    setIsPlaying(false);
+  };
+
+  const updateMembers = (newMembers) => {
+    setMembers(newMembers);
+  };
+
+  const addMember = (member) => {
+    setMembers(prev => [...prev, member]);
+  };
+
+  const removeMember = (memberId) => {
+    setMembers(prev => prev.filter(m => m.id !== memberId));
+  };
+
+  const value = {
+    // State
+    roomCode,
+    members,
+    hostName,
+    isHost,
+    messages,
+    currentTrack,
+    isPlaying,
+
+    // Setters
+    setMembers,
+    setMessages,
+    setCurrentTrack,
+    setIsPlaying,
+
+    // Actions
+    createRoom,
+    joinRoom,
+    sendChatMessage,
+    leaveRoom,
+    loadTrack,
+    playTrack,
+    pauseTrack,
+    updateMembers,
+    addMember,
+    removeMember,
   };
 
   return (
-    <RoomContext.Provider value={{
-      roomCode,
-      members,
-      hostName,
-      isHost,
-      messages,
-      createRoom,
-      joinRoom,
-      sendChatMessage,
-      leaveRoom
-    }}>
+    <RoomContext.Provider value={value}>
       {children}
     </RoomContext.Provider>
   );

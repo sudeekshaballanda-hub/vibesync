@@ -73,7 +73,7 @@ function Landing({ onEnterRoom }) {
 
 // RoomScreen Component with 3 columns and sync
 function RoomScreen({ roomCode, isHost, onLeave }) {
-    const { hostName, members, messages, sendChatMessage } = useRoom();
+    const { hostName, members, setMembers, messages, sendChatMessage } = useRoom();
     const [chatInput, setChatInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
@@ -85,12 +85,18 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [syncSocket, setSyncSocket] = useState(null);
     const [isSynced, setIsSynced] = useState(false);
     const [syncStatus, setSyncStatus] = useState('Not Connected');
+    const [roomMembers, setRoomMembers] = useState([]);
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
     // Connect to backend server
     useEffect(() => {
-        const socket = io('https://vibesync-backend.onrender.com');
+        const socket = io('https://vibesync-backend.onrender.com', {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionAttempts: 5
+        });
+
         setSyncSocket(socket);
 
         socket.on('connect', () => {
@@ -98,53 +104,89 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setSyncStatus('Connected');
         });
 
-        socket.on('room-created', () => {
-            setSyncStatus('Room Created - Ready to Sync');
+        socket.on('connect_error', (error) => {
+            console.error('Connection error:', error);
+            setSyncStatus('Connection failed');
         });
 
-        socket.on('room-joined', () => {
+        socket.on('room-created', (data) => {
+            console.log('Room created:', data);
+            setSyncStatus('Room Ready - You are Host');
+            setIsSynced(true);
+        });
+
+        socket.on('room-joined', (data) => {
+            console.log('Room joined:', data);
             setSyncStatus('Joined Room - Waiting for Host');
+            setIsSynced(true);
         });
 
-        socket.on('listener-joined', ({ name }) => {
+        socket.on('listener-joined', ({ name, count }) => {
             console.log(`${name} joined`);
+            setSyncStatus(`${count} listener${count !== 1 ? 's' : ''} in room`);
+            // Add to members list
+            setRoomMembers(prev => [...prev, { id: Date.now(), name }]);
         });
 
-        socket.on('song-playing', ({ song }) => {
+        socket.on('members-update', ({ hostName, listeners }) => {
+            console.log('Members update:', { hostName, listeners });
+            setRoomMembers(listeners || []);
+            // Update context members if needed
+            if (setMembers) setMembers(listeners || []);
+        });
+
+        socket.on('song-playing', ({ song, playedBy }) => {
+            console.log(`Song playing from ${playedBy}:`, song);
             if (!isHost) {
                 setSelectedSong(song);
-                alert(`Host is playing: ${song.snippet.title}`);
+                alert(`${playedBy} is playing: ${song.snippet?.title || song.title}`);
             }
         });
 
         socket.on('host-left', () => {
-            alert('Host has left the room');
+            alert('Host has left the room. Returning to home...');
             onLeave();
         });
 
         socket.on('error', (msg) => {
+            console.error('Server error:', msg);
             alert(msg);
         });
 
         return () => {
             if (socket) socket.disconnect();
         };
-    }, [isHost, onLeave]);
+    }, [isHost, onLeave, setMembers]);
 
     // Start sync function
     const startSync = () => {
-        if (!syncSocket) {
-            alert('Connecting to server...');
+        if (!syncSocket || !syncSocket.connected) {
+            alert('Connecting to server... Please wait.');
             return;
         }
 
         if (isHost) {
-            syncSocket.emit('create-room', { roomCode, hostName });
-            setIsSynced(true);
-            alert('Sync started! Share the room code with friends.');
+            syncSocket.emit('create-room', { roomCode, hostName }, (response) => {
+                if (response && response.success) {
+                    setIsSynced(true);
+                    setSyncStatus('Host - Sync Active');
+                    alert('Sync started! Share the room code with friends.');
+                } else {
+                    alert('Failed to create room. Try again.');
+                }
+            });
         } else {
-            syncSocket.emit('join-room', { roomCode, listenerName: hostName });
-            setIsSynced(true);
+            syncSocket.emit('join-room', { roomCode, listenerName: hostName }, (response) => {
+                if (response && response.success) {
+                    setIsSynced(true);
+                    setSyncStatus('Listener - Connected');
+                    alert('Connected to host! Waiting for them to play music.');
+                } else if (response && response.error) {
+                    alert(response.error);
+                } else {
+                    alert('Failed to join room. Make sure the room code is correct.');
+                }
+            });
         }
     };
 
@@ -181,9 +223,11 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     const playSong = (video) => {
         setSelectedSong(video);
-        if (isSynced && isHost && syncSocket) {
+        if (isSynced && isHost && syncSocket && syncSocket.connected) {
             syncSocket.emit('play-song', { roomCode, song: video });
             alert(`Playing: ${video.snippet.title} - Broadcasting to all listeners!`);
+        } else if (isHost && !isSynced) {
+            alert('Please click "Start Sync" first before playing songs.');
         }
     };
 
@@ -218,6 +262,12 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         );
     }
 
+    // Combine host + listeners for display
+    const allMembers = [
+        { id: 'host', name: hostName || 'Host', isHost: true },
+        ...roomMembers.map(m => ({ ...m, isHost: false }))
+    ];
+
     return (
         <div className="room">
             <div className="room-header">
@@ -230,6 +280,15 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         onClick={startSync}
                         disabled={isSynced}
                         className={`sync-btn ${isSynced ? 'synced' : ''}`}
+                        style={{
+                            background: isSynced ? '#4CAF50' : '#2196F3',
+                            padding: '8px 20px',
+                            borderRadius: '25px',
+                            border: 'none',
+                            color: 'white',
+                            cursor: isSynced ? 'default' : 'pointer',
+                            fontWeight: 'bold'
+                        }}
                     >
                         {isSynced ? '✅ Synced' : '🔗 Start Sync'}
                     </button>
@@ -237,8 +296,14 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 </div>
             </div>
 
-            <div className="sync-status-bar">
-                Status: {syncStatus} {isSynced && '✅ Synced'}
+            <div className="sync-status-bar" style={{
+                background: '#1a1a1a',
+                padding: '8px 20px',
+                fontSize: '12px',
+                color: isSynced ? '#4CAF50' : '#B0B0B0',
+                borderBottom: '1px solid #2a2a2a'
+            }}>
+                {isSynced ? '✅ ' : '⏳ '} Status: {syncStatus}
             </div>
 
             <div className="three-columns">
@@ -293,20 +358,15 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 <div className="column members-column">
                     <div className="column-header">
                         <h3>👥 Members</h3>
-                        <span className="member-count">{(members?.length || 0) + 1}</span>
+                        <span className="member-count">{allMembers.length}</span>
                     </div>
                     <div className="members-list">
-                        <div className="member-item host">
-                            <span className="member-avatar">👑</span>
-                            <span className="member-name">{hostName || 'Host'}</span>
-                            <span className="member-role">Host</span>
-                            {isHost && <span className="you-tag">You</span>}
-                        </div>
-                        {members?.map((member, idx) => (
-                            <div key={idx} className="member-item">
-                                <span className="member-avatar">🎧</span>
+                        {allMembers.map((member, idx) => (
+                            <div key={idx} className={`member-item ${member.isHost ? 'host' : ''}`}>
+                                <span className="member-avatar">{member.isHost ? '👑' : '🎧'}</span>
                                 <span className="member-name">{member.name}</span>
-                                <span className="member-role">Listener</span>
+                                <span className="member-role">{member.isHost ? 'Host' : 'Listener'}</span>
+                                {member.isHost && isHost && <span className="you-tag">You</span>}
                             </div>
                         ))}
                     </div>
