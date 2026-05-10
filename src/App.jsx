@@ -91,73 +91,81 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     // Connect to backend server
     useEffect(() => {
-        // Use wss:// for secure WebSocket
-        const BACKEND_URL = 'wss://vibesync-backend.onrender.com';
+        const BACKEND_URL = 'https://vibesync-backend.onrender.com';
 
-        console.log('Connecting to:', BACKEND_URL);
+        console.log('🔌 Connecting to backend:', BACKEND_URL);
 
         const socket = io(BACKEND_URL, {
-            transports: ['websocket', 'polling'],
+            transports: ['websocket', 'polling'],  // Try WebSocket first, fallback to polling
             reconnection: true,
-            reconnectionAttempts: 10,
             reconnectionDelay: 1000,
+            reconnectionDelayMax: 5000,
+            reconnectionAttempts: 10,
             timeout: 30000,
-            path: '/socket.io'
+            forceNew: true
         });
 
         setSyncSocket(socket);
 
+        // Connection events
         socket.on('connect', () => {
-            console.log('✅ Connected to sync server');
+            console.log('✅ Socket connected! Transport:', socket.io.engine.transport.name);
             setSyncStatus('Connected');
         });
 
-        socket.on('disconnect', () => {
-            console.log('❌ Disconnected');
-            setSyncStatus('Disconnected');
+        socket.on('disconnect', (reason) => {
+            console.log('❌ Socket disconnected:', reason);
+            setSyncStatus('Disconnected - Reconnecting...');
         });
 
         socket.on('connect_error', (error) => {
             console.error('Connection error:', error.message);
-            setSyncStatus('Connection failed');
+            setSyncStatus('Connection failed - Retrying...');
         });
 
-        socket.on('room-created', (data) => {
-            console.log('Room created:', data);
-            setSyncStatus('Room Ready - You are Host');
+        socket.on('reconnect_attempt', (attempt) => {
+            console.log('🔄 Reconnect attempt:', attempt);
+        });
+
+        socket.on('reconnect', () => {
+            console.log('✅ Reconnected!');
+            setSyncStatus('Connected');
+        });
+
+        // Room events
+        socket.on('room-created', () => {
+            console.log('Room created event received');
+            setSyncStatus('Ready - You are Host');
             setIsSynced(true);
         });
 
-        socket.on('room-joined', (data) => {
-            console.log('Room joined:', data);
-            setSyncStatus('Joined Room - Waiting for Host');
+        socket.on('room-joined', () => {
+            console.log('Room joined event received');
+            setSyncStatus('Connected - Waiting for Host');
             setIsSynced(true);
         });
 
-        socket.on('listener-joined', ({ name, count }) => {
-            console.log(`${name} joined`);
-            setSyncStatus(`${count} listener${count !== 1 ? 's' : ''} in room`);
-            // Add to members list
+        socket.on('listener-joined', ({ name }) => {
+            console.log(`${name} joined the room`);
             setRoomMembers(prev => [...prev, { id: Date.now(), name }]);
         });
 
         socket.on('members-update', ({ hostName, listeners }) => {
             console.log('Members update:', { hostName, listeners });
             setRoomMembers(listeners || []);
-            // Update context members if needed
             if (setMembers) setMembers(listeners || []);
         });
 
         socket.on('song-playing', ({ song, playedBy }) => {
-            console.log(`Song playing from ${playedBy}:`, song);
+            console.log(`🎵 Song from ${playedBy}:`, song.snippet?.title);
             if (!isHost) {
                 setSelectedSong(song);
-                alert(`${playedBy} is playing: ${song.snippet?.title || song.title}`);
+                alert(`${playedBy} is playing: ${song.snippet?.title}`);
             }
         });
 
         socket.on('host-left', () => {
-            alert('Host has left the room. Returning to home...');
+            alert('Host left. Returning home...');
             onLeave();
         });
 
@@ -174,32 +182,21 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     // Start sync function
     const startSync = () => {
         if (!syncSocket || !syncSocket.connected) {
-            alert('Connecting to server... Please wait.');
+            alert('Connecting to server... Please wait a moment.');
+            console.log('Socket status:', syncSocket?.connected);
             return;
         }
 
         if (isHost) {
-            syncSocket.emit('create-room', { roomCode, hostName }, (response) => {
-                if (response && response.success) {
-                    setIsSynced(true);
-                    setSyncStatus('Host - Sync Active');
-                    alert('Sync started! Share the room code with friends.');
-                } else {
-                    alert('Failed to create room. Try again.');
-                }
-            });
+            console.log('Emitting create-room for:', roomCode, hostName);
+            syncSocket.emit('create-room', { roomCode, hostName });
+            setIsSynced(true);
+            setSyncStatus('Host - Sync Active');
         } else {
-            syncSocket.emit('join-room', { roomCode, listenerName: hostName }, (response) => {
-                if (response && response.success) {
-                    setIsSynced(true);
-                    setSyncStatus('Listener - Connected');
-                    alert('Connected to host! Waiting for them to play music.');
-                } else if (response && response.error) {
-                    alert(response.error);
-                } else {
-                    alert('Failed to join room. Make sure the room code is correct.');
-                }
-            });
+            console.log('Emitting join-room for:', roomCode, hostName);
+            syncSocket.emit('join-room', { roomCode, listenerName: hostName });
+            setIsSynced(true);
+            setSyncStatus('Listener - Connected');
         }
     };
 
@@ -307,6 +304,19 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     </button>
                     <button onClick={onLeave} className="leave-btn">🚪 Leave Room</button>
                 </div>
+            </div>
+
+            {/* Connection Status - ADD THIS LINE */}
+            <div style={{
+                fontSize: '12px',
+                padding: '4px 20px',
+                background: '#1a1a1a',
+                borderBottom: '1px solid #2a2a2a',
+                color: syncSocket?.connected ? '#4CAF50' : '#ff9800',
+                textAlign: 'center'
+            }}>
+                📡 Socket: {syncSocket?.connected ? '🟢 Connected' : '🟡 Connecting...'} |
+                Transport: {syncSocket?.io?.engine?.transport?.name || 'N/A'}
             </div>
 
             <div className="sync-status-bar" style={{
