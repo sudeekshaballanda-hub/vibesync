@@ -5,16 +5,16 @@ const cors = require('cors');
 
 const app = express();
 
-// CORS for Express routes
+// CORS for Express routes - Allow all origins for testing
 app.use(cors({
-    origin: ["https://vibesync-alpha.vercel.app", "http://localhost:3000", "http://localhost:3001"],
+    origin: '*',
     methods: ["GET", "POST", "OPTIONS"],
-    credentials: true
+    credentials: false
 }));
 
 // Test route
 app.get('/', (req, res) => {
-    res.json({ message: 'VibeSync Backend is running!' });
+    res.json({ message: 'VibeSync Backend is running!', status: 'ok' });
 });
 app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -22,120 +22,80 @@ app.get('/health', (req, res) => {
 
 const server = http.createServer(app);
 
-// Socket.io with proper CORS and transports
+// Socket.io with all transports enabled
 const io = socketIo(server, {
     cors: {
-        origin: ["https://vibesync-alpha.vercel.app", "http://localhost:3000", "http://localhost:3001"],
+        origin: "*",
         methods: ["GET", "POST"],
-        credentials: true,
-        allowedHeaders: ["Content-Type", "Authorization"]
+        credentials: false
     },
-    transports: ['websocket', 'polling'],  // ← Important fallback
-    allowEIO3: true
+    transports: ['websocket', 'polling'],  // Critical: both transports
+    allowEIO3: true,
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 
-// Store rooms and their data
 const rooms = new Map();
 
 io.on('connection', (socket) => {
-    console.log('✅ New client connected:', socket.id);
-    console.log('Transport:', socket.conn.transport.name);
+    console.log('✅ Connected:', socket.id, 'Transport:', socket.conn.transport.name);
 
-    // Create room (Host)
+    // Create room
     socket.on('create-room', ({ roomCode, hostName }) => {
         socket.join(roomCode);
         rooms.set(roomCode, {
             hostId: socket.id,
             hostName: hostName,
             listeners: [],
-            currentSong: null,
-            isPlaying: false
+            currentSong: null
         });
         socket.data.roomCode = roomCode;
         socket.data.isHost = true;
-
-        console.log(`📢 Room created: ${roomCode} by ${hostName}`);
+        console.log(`📢 Room ${roomCode} by ${hostName}`);
         socket.emit('room-created', { roomCode });
     });
 
-    // Join room (Listener)
+    // Join room
     socket.on('join-room', ({ roomCode, listenerName }) => {
         const room = rooms.get(roomCode);
-
         if (room) {
             socket.join(roomCode);
             room.listeners.push({ id: socket.id, name: listenerName });
             socket.data.roomCode = roomCode;
             socket.data.isHost = false;
-            socket.data.name = listenerName;
-
-            // Notify host
-            io.to(room.hostId).emit('listener-joined', {
-                name: listenerName,
-                count: room.listeners.length
-            });
-
-            // Notify all listeners about updated member list
+            io.to(room.hostId).emit('listener-joined', { name: listenerName });
             io.to(roomCode).emit('members-update', {
                 hostName: room.hostName,
                 listeners: room.listeners
             });
-
-            console.log(`👤 ${listenerName} joined room ${roomCode}`);
+            console.log(`👤 ${listenerName} joined ${roomCode}`);
             socket.emit('room-joined', { roomCode });
         } else {
-            console.log(`❌ Room not found: ${roomCode}`);
             socket.emit('error', 'Room not found');
         }
     });
 
-    // Host plays a song
+    // Play song
     socket.on('play-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.currentSong = song;
-            room.isPlaying = true;
-
-            // Broadcast to ALL clients in room (including host)
-            io.to(roomCode).emit('song-playing', {
-                song,
-                startTime: Date.now(),
-                playedBy: room.hostName
-            });
-
-            console.log(`▶️ Host playing: ${song.snippet?.title || song.title} in room ${roomCode}`);
+            io.to(roomCode).emit('song-playing', { song, playedBy: room.hostName });
+            console.log(`▶️ Playing in ${roomCode}`);
         }
     });
 
-    // Get room state
-    socket.on('get-room-state', ({ roomCode }) => {
-        const room = rooms.get(roomCode);
-        if (room) {
-            socket.emit('room-state', {
-                currentSong: room.currentSong,
-                isPlaying: room.isPlaying,
-                hostName: room.hostName,
-                listeners: room.listeners
-            });
-        }
-    });
-
-    // Disconnect
     socket.on('disconnect', () => {
-        console.log('❌ Client disconnected:', socket.id);
-
+        console.log('❌ Disconnected:', socket.id);
         for (const [code, room] of rooms.entries()) {
             if (room.hostId === socket.id) {
-                io.to(code).emit('host-left', { message: 'Host has left the room' });
+                io.to(code).emit('host-left');
                 rooms.delete(code);
-                console.log(`🔒 Room ${code} closed (host left)`);
                 break;
             }
-
-            const listenerIndex = room.listeners.findIndex(l => l.id === socket.id);
-            if (listenerIndex !== -1) {
-                const removedListener = room.listeners.splice(listenerIndex, 1);
-                console.log(`👋 ${removedListener[0]?.name} left room ${code}`);
+            const idx = room.listeners.findIndex(l => l.id === socket.id);
+            if (idx !== -1) {
+                room.listeners.splice(idx, 1);
                 io.to(code).emit('members-update', {
                     hostName: room.hostName,
                     listeners: room.listeners
@@ -148,8 +108,6 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 VibeSync Sync Server running on port ${PORT}`);
-    console.log(`📍 WebSocket endpoint: ws://0.0.0.0:${PORT}`);
-    console.log(`📍 CORS enabled for vercel.app and localhost`);
+    console.log(`🚀 Server on port ${PORT}`);
     console.log(`📍 Transports: websocket, polling`);
 });
