@@ -75,12 +75,24 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Host plays a song
     socket.on('play-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.currentSong = song;
-            io.to(roomCode).emit('song-playing', { song, playedBy: room.hostName });
-            console.log(`▶️ Playing in ${roomCode}`);
+            room.isPlaying = true;
+
+            // ADD THIS - Calculate exact play time (500ms from now to account for network)
+            const playAt = Date.now() + 500;
+
+            // Broadcast to ALL clients with the exact play time
+            io.to(roomCode).emit('song-playing', {
+                song,
+                playAt: playAt,  // ← CRITICAL: Send exact time to play
+                playedBy: room.hostName
+            });
+
+            console.log(`▶️ Will play at ${playAt}`);
         }
     });
 

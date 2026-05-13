@@ -160,11 +160,37 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (setMembers) setMembers(listeners || []);
         });
 
-        socket.on('song-playing', ({ song, playedBy }) => {
-            console.log(`🎵 Song from ${playedBy}:`, song.snippet?.title);
+        socket.on('song-playing', ({ song, playAt, playedBy }) => {
+            console.log(`🎵 Song from ${playedBy}, play at: ${playAt}`);
+
             if (!isHost) {
+                // 1. Store the song data as before
                 setSelectedSong(song);
-                alert(`${playedBy} is playing: ${song.snippet?.title}`);
+
+                // 2. Calculate the exact delay
+                const now = Date.now();
+                const delay = Math.max(0, playAt - now);
+                console.log(`Scheduling iframe update in ${delay}ms`);
+
+                // 3. Schedule the iframe change at the exact time
+                const timerId = setTimeout(() => {
+                    // Find the iframe element in your player view
+                    const iframe = document.querySelector('iframe');
+                    if (iframe) {
+                        // Construct the correct YouTube URL
+                        const videoUrl = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
+                        console.log(`Updating iframe src to: ${videoUrl}`);
+                        // Change the iframe's source to load and autoplay the new video
+                        iframe.src = videoUrl;
+                    } else {
+                        console.error("Iframe element not found to update the song.");
+                        // Fallback alert
+                        alert(`Now playing (manual check): ${song.snippet.title}`);
+                    }
+                }, delay);
+
+                // Optional: Store timerId to clean up if a new song is scheduled before this one plays
+                // You can add: return () => clearTimeout(timerId);
             }
         });
 
@@ -182,6 +208,40 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (socket) socket.disconnect();
         };
     }, [isHost, onLeave, setMembers]);
+
+    // Add this useEffect RIGHT AFTER your socket connection useEffect
+    useEffect(() => {
+        // This runs when selectedSong changes (new song is played)
+        if (selectedSong && !isHost && selectedSong.scheduledPlayAt) {
+            const now = Date.now();
+            const delay = Math.max(0, selectedSong.scheduledPlayAt - now);
+
+            console.log(`⏰ Scheduling iframe update in ${delay}ms for:`, selectedSong.snippet.title);
+
+            const timerId = setTimeout(() => {
+                // Find the iframe in the player view
+                const iframe = document.querySelector('.player-container iframe');
+                if (iframe) {
+                    const videoUrl = `https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1&enablejsapi=1`;
+                    console.log(`🎬 Updating iframe src to: ${videoUrl}`);
+                    iframe.src = videoUrl;
+                } else {
+                    console.warn('Iframe not found yet, retrying in 100ms...');
+                    // Retry once if iframe not ready
+                    setTimeout(() => {
+                        const iframeRetry = document.querySelector('.player-container iframe');
+                        if (iframeRetry) {
+                            const videoUrl = `https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1&enablejsapi=1`;
+                            iframeRetry.src = videoUrl;
+                        }
+                    }, 100);
+                }
+            }, delay);
+
+            // Cleanup: cancel the timeout if a new song comes before this one plays
+            return () => clearTimeout(timerId);
+        }
+    }, [selectedSong, isHost]);
 
     // Start sync function
     const startSync = () => {
