@@ -91,7 +91,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     // Connect to backend server
     useEffect(() => {
-        const BACKEND_URL = 'https://vibesync-backend.onrender.com';
+        const BACKEND_URL = 'https://vibesync-o3j5.onrender.com';
 
         console.log('🔌 Connecting to backend:', BACKEND_URL);
 

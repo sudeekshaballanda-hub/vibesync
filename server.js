@@ -27,20 +27,14 @@ app.get('/health', (req, res) => {
 
 const server = http.createServer(app);
 
-const io = socketIo(server, {
-    path: '/socket.io/',  // ← Explicit path
+const io = new Server(server, {
     cors: {
-        origin: "*",
+        origin: ["https://vibesync-alpha.vercel.app", "http://localhost:3000"],
         methods: ["GET", "POST"],
-        credentials: false,
-        allowedHeaders: ["my-custom-header"]
+        credentials: true
     },
-    transports: ['websocket', 'polling'],
-    allowEIO3: true,
-    allowEIO4: true,  // ← ADD THIS
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    maxHttpBufferSize: 1e6  // ← ADD THIS (1MB limit)
+    // Allow WebSocket and polling
+    transports: ['websocket', 'polling']
 });
 
 const rooms = new Map();
