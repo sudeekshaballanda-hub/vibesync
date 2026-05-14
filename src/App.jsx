@@ -91,6 +91,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
     // Connect to backend server
+    // Connect to backend server
     useEffect(() => {
         const BACKEND_URL = 'https://vibesync-o3j5.onrender.com';
 
@@ -107,6 +108,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         });
 
         setSyncSocket(socket);
+
+        // Store timer ID locally to avoid closure issues
+        let pendingTimer = null;
 
         socket.on('connect', () => {
             console.log('✅ Socket connected! Transport:', socket.io.engine.transport.name);
@@ -156,14 +160,15 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (setMembers) setMembers(listeners || []);
         });
 
-        // UPDATED: song-playing with timer cleanup
+        // FIXED: song-playing with proper timer management
         socket.on('song-playing', ({ song, playAt, playedBy }) => {
             console.log(`🎵 From ${playedBy}, play at: ${playAt}`);
+            console.log(`Current time: ${Date.now()}, delay: ${playAt - Date.now()}ms`);
 
-            // Clear any pending timer to prevent race conditions
-            if (scheduledPlayTimerId) {
-                clearTimeout(scheduledPlayTimerId);
-                setScheduledPlayTimerId(null);
+            // Clear any pending timer
+            if (pendingTimer) {
+                clearTimeout(pendingTimer);
+                pendingTimer = null;
             }
 
             const now = Date.now();
@@ -172,15 +177,15 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             console.log(`⏰ Scheduling play in ${delay}ms`);
 
             if (delay <= 50) {
-                // Play immediately if delay is negligible
+                // Play immediately
                 setSelectedSong(song);
             } else {
-                // Schedule playback for precise timing
-                const timerId = setTimeout(() => {
+                // Schedule playback
+                pendingTimer = setTimeout(() => {
+                    console.log(`🎬 Executing scheduled play at ${Date.now()}`);
                     setSelectedSong(song);
-                    setScheduledPlayTimerId(null);
+                    pendingTimer = null;
                 }, delay);
-                setScheduledPlayTimerId(timerId);
             }
         });
 
@@ -195,8 +200,8 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         });
 
         return () => {
-            if (scheduledPlayTimerId) {
-                clearTimeout(scheduledPlayTimerId);
+            if (pendingTimer) {
+                clearTimeout(pendingTimer);
             }
             if (socket) socket.disconnect();
         };
@@ -266,9 +271,8 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     // UPDATED: playSong function - Host emits to server
     const playSong = (video) => {
         if (isHost && syncSocket && syncSocket.connected && isSynced) {
-            // Don't play immediately - let server broadcast with timestamp
+            console.log(`📤 Host requesting play at ${Date.now()}`);
             syncSocket.emit('play-song', { roomCode, song: video });
-            console.log(`📤 Host requested play: ${video.snippet.title}`);
             alert(`🎵 Preparing "${video.snippet.title}" for sync...`);
         } else if (isHost && !isSynced) {
             alert('Please click "Start Sync" first before playing songs.');
