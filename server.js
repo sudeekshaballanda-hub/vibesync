@@ -4,43 +4,19 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 
 const app = express();
-
-app.use(cors({
-    origin: '*',
-    methods: ["GET", "POST", "OPTIONS"],
-    credentials: false
-}));
-
-// Root route
-app.get('/', (req, res) => {
-    res.json({
-        message: 'VibeSync Backend is running!',
-        status: 'ok',
-        socketIoPath: '/socket.io/',
-        connectTo: 'https://vibesync-backend.onrender.com with path /socket.io/'
-    });
-});
-
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+app.use(cors());
 
 const server = http.createServer(app);
-
-const io = new Server(server, {
-    cors: {
-        origin: ["https://vibesync-alpha.vercel.app", "http://localhost:3000"],
-        methods: ["GET", "POST"],
-        credentials: true
-    },
-    // Allow WebSocket and polling
+const io = socketIo(server, {
+    cors: { origin: "*", methods: ["GET", "POST"] },
     transports: ['websocket', 'polling']
 });
 
 const rooms = new Map();
+const NETWORK_BUFFER = 500; // milliseconds buffer for network delay
 
 io.on('connection', (socket) => {
-    console.log('✅ Connected:', socket.id, 'Transport:', socket.conn.transport.name);
+    console.log('✅ Connected:', socket.id);
 
     socket.on('create-room', ({ roomCode, hostName }) => {
         socket.join(roomCode);
@@ -50,10 +26,8 @@ io.on('connection', (socket) => {
             listeners: [],
             currentSong: null
         });
-        socket.data.roomCode = roomCode;
-        socket.data.isHost = true;
-        console.log(`📢 Room ${roomCode} by ${hostName}`);
         socket.emit('room-created', { roomCode });
+        console.log(`📢 Room ${roomCode} by ${hostName}`);
     });
 
     socket.on('join-room', ({ roomCode, listenerName }) => {
@@ -61,38 +35,30 @@ io.on('connection', (socket) => {
         if (room) {
             socket.join(roomCode);
             room.listeners.push({ id: socket.id, name: listenerName });
-            socket.data.roomCode = roomCode;
-            socket.data.isHost = false;
             io.to(room.hostId).emit('listener-joined', { name: listenerName });
-            io.to(roomCode).emit('members-update', {
-                hostName: room.hostName,
-                listeners: room.listeners
-            });
-            console.log(`👤 ${listenerName} joined ${roomCode}`);
             socket.emit('room-joined', { roomCode });
+            console.log(`👤 ${listenerName} joined ${roomCode}`);
         } else {
             socket.emit('error', 'Room not found');
         }
     });
 
-    // Host plays a song
     socket.on('play-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.currentSong = song;
-            room.isPlaying = true;
 
-            // ADD THIS - Calculate exact play time (500ms from now to account for network)
-            const playAt = Date.now() + 500;
+            // CRITICAL: Calculate exact play time with buffer
+            const playAt = Date.now() + NETWORK_BUFFER;
 
-            // Broadcast to ALL clients with the exact play time
+            // Broadcast to ALL clients (including host via room broadcast)
             io.to(roomCode).emit('song-playing', {
                 song,
-                playAt: playAt,  // ← CRITICAL: Send exact time to play
+                playAt: playAt,
                 playedBy: room.hostName
             });
 
-            console.log(`▶️ Will play at ${playAt}`);
+            console.log(`▶️ Playing in ${roomCode} at ${playAt} (buffer: ${NETWORK_BUFFER}ms)`);
         }
     });
 
@@ -105,21 +71,10 @@ io.on('connection', (socket) => {
                 break;
             }
             const idx = room.listeners.findIndex(l => l.id === socket.id);
-            if (idx !== -1) {
-                room.listeners.splice(idx, 1);
-                io.to(code).emit('members-update', {
-                    hostName: room.hostName,
-                    listeners: room.listeners
-                });
-                break;
-            }
+            if (idx !== -1) room.listeners.splice(idx, 1);
         }
     });
 });
 
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server on port ${PORT}`);
-    console.log(`📍 Socket.io path: /socket.io/`);
-    console.log(`📍 Transports: websocket, polling`);
-});
+server.listen(PORT, () => console.log(`🚀 Server on port ${PORT}`));

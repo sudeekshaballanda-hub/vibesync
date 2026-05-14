@@ -80,6 +80,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [searchLoading, setSearchLoading] = useState(false);
     const [selectedSource, setSelectedSource] = useState('youtube');
     const [selectedSong, setSelectedSong] = useState(null);
+    const [scheduledPlayTimerId, setScheduledPlayTimerId] = useState(null);
 
     // Sync related states
     const [syncSocket, setSyncSocket] = useState(null);
@@ -96,16 +97,13 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         console.log('🔌 Connecting to backend:', BACKEND_URL);
 
         const socket = io(BACKEND_URL, {
-            path: '/socket.io/',  // ← ADD THIS LINE (explicit path)
             transports: ['websocket', 'polling'],
             reconnection: true,
             reconnectionDelay: 1000,
             reconnectionDelayMax: 5000,
             reconnectionAttempts: 10,
             timeout: 30000,
-            forceNew: true,
-            secure: true,  // ← ADD THIS
-            rejectUnauthorized: false  // ← ADD THIS for HTTPS
+            forceNew: true
         });
 
         setSyncSocket(socket);
@@ -121,9 +119,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         });
 
         socket.on('connect_error', (error) => {
-            console.error('❌ Connection error:', error);
-            console.error('Error message:', error.message);
-            console.error('Error data:', error.data);
+            console.error('❌ Connection error:', error.message);
             setSyncStatus('Connection failed - Retrying...');
         });
 
@@ -160,37 +156,31 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (setMembers) setMembers(listeners || []);
         });
 
+        // UPDATED: song-playing with timer cleanup
         socket.on('song-playing', ({ song, playAt, playedBy }) => {
-            console.log(`🎵 Song from ${playedBy}, play at: ${playAt}`);
+            console.log(`🎵 From ${playedBy}, play at: ${playAt}`);
 
-            if (!isHost) {
-                // 1. Store the song data as before
+            // Clear any pending timer to prevent race conditions
+            if (scheduledPlayTimerId) {
+                clearTimeout(scheduledPlayTimerId);
+                setScheduledPlayTimerId(null);
+            }
+
+            const now = Date.now();
+            const delay = Math.max(0, playAt - now);
+
+            console.log(`⏰ Scheduling play in ${delay}ms`);
+
+            if (delay <= 50) {
+                // Play immediately if delay is negligible
                 setSelectedSong(song);
-
-                // 2. Calculate the exact delay
-                const now = Date.now();
-                const delay = Math.max(0, playAt - now);
-                console.log(`Scheduling iframe update in ${delay}ms`);
-
-                // 3. Schedule the iframe change at the exact time
+            } else {
+                // Schedule playback for precise timing
                 const timerId = setTimeout(() => {
-                    // Find the iframe element in your player view
-                    const iframe = document.querySelector('iframe');
-                    if (iframe) {
-                        // Construct the correct YouTube URL
-                        const videoUrl = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
-                        console.log(`Updating iframe src to: ${videoUrl}`);
-                        // Change the iframe's source to load and autoplay the new video
-                        iframe.src = videoUrl;
-                    } else {
-                        console.error("Iframe element not found to update the song.");
-                        // Fallback alert
-                        alert(`Now playing (manual check): ${song.snippet.title}`);
-                    }
+                    setSelectedSong(song);
+                    setScheduledPlayTimerId(null);
                 }, delay);
-
-                // Optional: Store timerId to clean up if a new song is scheduled before this one plays
-                // You can add: return () => clearTimeout(timerId);
+                setScheduledPlayTimerId(timerId);
             }
         });
 
@@ -205,43 +195,21 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         });
 
         return () => {
+            if (scheduledPlayTimerId) {
+                clearTimeout(scheduledPlayTimerId);
+            }
             if (socket) socket.disconnect();
         };
     }, [isHost, onLeave, setMembers]);
 
-    // Add this useEffect RIGHT AFTER your socket connection useEffect
+    // Timer cleanup on unmount
     useEffect(() => {
-        // This runs when selectedSong changes (new song is played)
-        if (selectedSong && !isHost && selectedSong.scheduledPlayAt) {
-            const now = Date.now();
-            const delay = Math.max(0, selectedSong.scheduledPlayAt - now);
-
-            console.log(`⏰ Scheduling iframe update in ${delay}ms for:`, selectedSong.snippet.title);
-
-            const timerId = setTimeout(() => {
-                // Find the iframe in the player view
-                const iframe = document.querySelector('.player-container iframe');
-                if (iframe) {
-                    const videoUrl = `https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1&enablejsapi=1`;
-                    console.log(`🎬 Updating iframe src to: ${videoUrl}`);
-                    iframe.src = videoUrl;
-                } else {
-                    console.warn('Iframe not found yet, retrying in 100ms...');
-                    // Retry once if iframe not ready
-                    setTimeout(() => {
-                        const iframeRetry = document.querySelector('.player-container iframe');
-                        if (iframeRetry) {
-                            const videoUrl = `https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1&enablejsapi=1`;
-                            iframeRetry.src = videoUrl;
-                        }
-                    }, 100);
-                }
-            }, delay);
-
-            // Cleanup: cancel the timeout if a new song comes before this one plays
-            return () => clearTimeout(timerId);
-        }
-    }, [selectedSong, isHost]);
+        return () => {
+            if (scheduledPlayTimerId) {
+                clearTimeout(scheduledPlayTimerId);
+            }
+        };
+    }, [scheduledPlayTimerId]);
 
     // Start sync function
     const startSync = () => {
@@ -295,13 +263,17 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         setSearchLoading(false);
     };
 
+    // UPDATED: playSong function - Host emits to server
     const playSong = (video) => {
-        setSelectedSong(video);
-        if (isSynced && isHost && syncSocket && syncSocket.connected) {
+        if (isHost && syncSocket && syncSocket.connected && isSynced) {
+            // Don't play immediately - let server broadcast with timestamp
             syncSocket.emit('play-song', { roomCode, song: video });
-            alert(`Playing: ${video.snippet.title} - Broadcasting to all listeners!`);
+            console.log(`📤 Host requested play: ${video.snippet.title}`);
+            alert(`🎵 Preparing "${video.snippet.title}" for sync...`);
         } else if (isHost && !isSynced) {
             alert('Please click "Start Sync" first before playing songs.');
+        } else if (!isHost) {
+            alert('Only the host can play songs');
         }
     };
 
@@ -323,10 +295,10 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 <div className="player-container">
                     <h3>{selectedSong.snippet.title}</h3>
                     <iframe
+                        title={selectedSong.snippet.title}
                         width="100%"
                         height="400"
                         src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1`}
-                        title={selectedSong.snippet.title}
                         frameBorder="0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
                         allowFullScreen
@@ -370,7 +342,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 </div>
             </div>
 
-            {/* Connection Status - ADD THIS LINE */}
+            {/* Connection Status */}
             <div style={{
                 fontSize: '12px',
                 padding: '4px 20px',
