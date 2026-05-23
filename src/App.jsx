@@ -3,7 +3,7 @@ import { RoomProvider, useRoom } from './context/RoomContext';
 import io from 'socket.io-client';
 import './index.css';
 
-// Landing Component (same as before)
+// Landing Component
 function Landing({ onEnterRoom }) {
     const { createRoom, joinRoom } = useRoom();
     const [name, setName] = useState('');
@@ -79,9 +79,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [countdownNumber, setCountdownNumber] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
-    const audioRef = useRef(null);
     const iframeRef = useRef(null);
-    const [selectedSource, setSelectedSource] = useState('youtube'); 
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
@@ -91,7 +89,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         setBufferingProgress(0);
         
         return new Promise((resolve) => {
-            // Create hidden audio element for preloading
             const audio = new Audio();
             audio.preload = 'auto';
             audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
@@ -159,7 +156,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setCurrentTime(currentTime);
         });
         
-        // Prepare song - start buffering
         socket.on('prepare-song', async ({ song }) => {
             console.log('📢 Preparing song:', song.snippet.title);
             setSelectedSong(song);
@@ -167,18 +163,14 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setCountdownNumber(null);
             
             await preloadSong(song);
-            
-            // Send ready signal
             socket.emit('device-ready', { roomCode });
         });
         
-        // Ready progress update
         socket.on('ready-progress', ({ readyCount, totalDevices }) => {
             setReadyCount(readyCount);
             setTotalDevices(totalDevices);
         });
         
-        // Countdown
         socket.on('countdown', ({ number }) => {
             setCountdownNumber(number);
             if (number === 0) {
@@ -187,7 +179,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }
         });
         
-        // Play now!
         socket.on('play-now', ({ song, playAt, startTime }) => {
             console.log('🎬 PLAY NOW!');
             setSelectedSong(song);
@@ -196,7 +187,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setIsPreparing(false);
             setCountdownNumber(null);
             
-            // Update iframe to play
             setTimeout(() => {
                 if (iframeRef.current) {
                     const videoId = song.id.videoId;
@@ -205,30 +195,17 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }, 100);
         });
         
-        // Host controls (listeners follow)
         socket.on('sync-pause', () => {
             if (!isHost) {
                 setIsPlaying(false);
-                // Pause iframe
-                if (iframeRef.current) {
-                    // YouTube iframe pause requires postMessage
-                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
-                }
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
             }
         });
         
         socket.on('sync-resume', () => {
             if (!isHost) {
                 setIsPlaying(true);
-                if (iframeRef.current) {
-                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-                }
-            }
-        });
-        
-        socket.on('sync-seek', ({ position }) => {
-            if (!isHost) {
-                setCurrentTime(position);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             }
         });
         
@@ -287,42 +264,39 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     // Host plays a song
     const playSong = (video) => {
-    console.log('🎤 playSong called. isHost:', isHost, 'isSynced:', isSynced, 'socket connected:', syncSocket?.connected);
-    
-    if (!isHost) {
-        alert('Only the host can play songs');
-        return;
-    }
-    if (!syncSocket?.connected) {
-        alert('Not connected to server');
-        return;
-    }
-    if (!isSynced) {
-        alert('Please click "Start Sync" first before playing songs.');
-        return;
-    }
-    
-    if (!video || !video.id || !video.id.videoId) {
-        console.error('Invalid video object:', video);
-        alert('Invalid song selected');
-        return;
-    }
-    
-    console.log('🎤 Host playing:', video.snippet.title);
-    setSelectedSong(video);  // ← ADD THIS LINE - Show song on host immediately
-    
-    // Tell server to prepare ALL devices
-    syncSocket.emit('prepare-song', { roomCode, song: video });
-    
-    // Host also preloads locally
-    preloadSong(video).then(() => {
-        console.log('✅ Host ready, sending ready signal');
-        syncSocket.emit('device-ready', { roomCode });
-    }).catch(err => {
-        console.error('Preload error:', err);
-        alert('Failed to load song. Please try again.');
-    });
-};
+        console.log('🎤 playSong called. isHost:', isHost, 'isSynced:', isSynced);
+        
+        if (!isHost) {
+            alert('Only the host can play songs');
+            return;
+        }
+        if (!syncSocket?.connected) {
+            alert('Not connected to server');
+            return;
+        }
+        if (!isSynced) {
+            alert('Please click "Start Sync" first');
+            return;
+        }
+        
+        if (!video || !video.id || !video.id.videoId) {
+            console.error('Invalid video:', video);
+            alert('Invalid song selected');
+            return;
+        }
+        
+        console.log('🎤 Host playing:', video.snippet.title);
+        setSelectedSong(video);
+        syncSocket.emit('prepare-song', { roomCode, song: video });
+        
+        preloadSong(video).then(() => {
+            console.log('✅ Host ready');
+            syncSocket.emit('device-ready', { roomCode });
+        }).catch(err => {
+            console.error('Preload error:', err);
+            alert('Failed to load song');
+        });
+    };
     
     // Host controls
     const handlePause = () => {
@@ -342,13 +316,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             syncSocket.emit('host-stop', { roomCode });
             setSelectedSong(null);
             setIsPlaying(false);
-        }
-    };
-    
-    const handleSeek = (position) => {
-        if (isHost && syncSocket?.connected) {
-            syncSocket.emit('host-seek', { roomCode, position });
-            setCurrentTime(position);
         }
     };
 
@@ -378,7 +345,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     <button onClick={() => setSelectedSong(null)}>← Back to Room</button>
                 </div>
                 
-                {/* Countdown Display */}
                 {countdownNumber !== null && countdownNumber > 0 && (
                     <div className="countdown-overlay">
                         <div className="countdown-number">{countdownNumber}</div>
@@ -386,7 +352,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     </div>
                 )}
                 
-                {/* Buffering Progress */}
                 {isPreparing && countdownNumber === null && (
                     <div className="buffering-container">
                         <div className="buffering-text">Buffering: {Math.round(bufferingProgress)}%</div>
@@ -413,7 +378,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     />
                 </div>
                 
-                {/* Show message for listeners */}
                 {!isHost && (
                     <div className="listener-info">
                         🎧 You are in sync with the host. Host controls playback.
@@ -449,68 +413,42 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             </div>
 
             <div className="three-columns">
-                {/* SEARCH COLUMN - Only host can search */}
+                
+                {/* COLUMN 1: SEARCH - FIXED VERSION (NO DUPLICATES) */}
                 <div className="column search-column">
                     <div className="column-header">
                         <h3>🔍 Search Music</h3>
                         {!isHost && <span className="host-only-badge">(Host only)</span>}
                     </div>
                     
-                     {/* COLUMN 1: SEARCH */}
-<div className="column search-column">
-    <div className="column-header">
-        <h3>🔍 Search Music</h3>
-    </div>
-    
-    {/* SOURCE TABS - YouTube and Spotify */}
-    <div className="source-tabs">
-        <button
-            className={`source-tab ${selectedSource === 'youtube' ? 'active' : ''}`}
-            onClick={() => setSelectedSource('youtube')}
-        >
-            🎬 YouTube
-        </button>
-        <button className="source-tab disabled" disabled>🎵 Spotify (Soon)</button>
-    </div>
-    
-    {/* SEARCH BAR */}
-    <div className="search-bar">
-        <input
-            type="text"
-            placeholder="Search for a song..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            onKeyPress={(e) => e.key === 'Enter' && searchYouTube()}
-        />
-        <button onClick={searchYouTube} disabled={searchLoading}>
-            {searchLoading ? '...' : '🔍'}
-        </button>
-    </div>
-    
-    {/* SEARCH RESULTS */}
-    <div className="search-results">
-        {searchResults.map((video) => (
-            <div key={video.id.videoId} className="song-item" onClick={() => playSong(video)}>
-                <img src={video.snippet.thumbnails.default?.url} alt="" />
-                <div className="song-info">
-                    <div className="song-title">{video.snippet.title.substring(0, 40)}</div>
-                    <div className="song-artist">{video.snippet.channelTitle}</div>
-                </div>
-                <button className="play-song-btn">▶</button>
-            </div>
-        ))}
-        {searchResults.length === 0 && !searchLoading && (
-            <div className="empty-state">🎤 Search for a song to play</div>
-        )}
-    </div>
-</div>
-
+                    {/* SOURCE TABS */}
+                    <div className="source-tabs">
+                        <button
+                            className={`source-tab ${selectedSource === 'youtube' ? 'active' : ''}`}
+                            onClick={() => setSelectedSource('youtube')}
+                        >
+                            🎬 YouTube
+                        </button>
+                        <button className="source-tab disabled" disabled>🎵 Spotify (Soon)</button>
+                    </div>
+                    
                     {isHost ? (
                         <>
+                            {/* SEARCH BAR */}
                             <div className="search-bar">
-                                <input type="text" placeholder="Search for a song..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyPress={e => e.key === 'Enter' && searchYouTube()} />
-                                <button onClick={searchYouTube} disabled={searchLoading}>{searchLoading ? '...' : '🔍'}</button>
+                                <input 
+                                    type="text" 
+                                    placeholder="Search for a song..." 
+                                    value={searchQuery} 
+                                    onChange={e => setSearchQuery(e.target.value)} 
+                                    onKeyPress={e => e.key === 'Enter' && searchYouTube()} 
+                                />
+                                <button onClick={searchYouTube} disabled={searchLoading}>
+                                    {searchLoading ? '...' : '🔍'}
+                                </button>
                             </div>
+                            
+                            {/* SEARCH RESULTS */}
                             <div className="search-results">
                                 {searchResults.map((video) => (
                                     <div key={video.id.videoId} className="song-item" onClick={() => playSong(video)}>
@@ -522,6 +460,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                                         <button className="play-song-btn">▶</button>
                                     </div>
                                 ))}
+                                {searchResults.length === 0 && !searchLoading && (
+                                    <div className="empty-state">🎤 Search for a song to play</div>
+                                )}
                             </div>
                         </>
                     ) : (
@@ -533,7 +474,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     )}
                 </div>
 
-                {/* MEMBERS COLUMN */}
+                {/* COLUMN 2: MEMBERS */}
                 <div className="column members-column">
                     <div className="column-header">
                         <h3>👥 Members</h3>
@@ -551,7 +492,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     </div>
                 </div>
 
-                {/* CHAT COLUMN */}
+                {/* COLUMN 3: CHAT */}
                 <div className="column chat-column">
                     <div className="column-header">
                         <h3>💬 Group Chat</h3>
@@ -570,7 +511,13 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         )}
                     </div>
                     <div className="chat-input-area">
-                        <input type="text" placeholder="Type a message..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && sendMessage()} />
+                        <input 
+                            type="text" 
+                            placeholder="Type a message..." 
+                            value={chatInput} 
+                            onChange={e => setChatInput(e.target.value)} 
+                            onKeyPress={e => e.key === 'Enter' && sendMessage()} 
+                        />
                         <button onClick={sendMessage}>Send</button>
                     </div>
                 </div>
