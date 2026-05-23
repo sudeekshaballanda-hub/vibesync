@@ -81,6 +81,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [currentTime, setCurrentTime] = useState(0);
     const audioRef = useRef(null);
     const iframeRef = useRef(null);
+    const [selectedSource, setSelectedSource] = useState('youtube'); 
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
@@ -286,27 +287,42 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     // Host plays a song
     const playSong = (video) => {
-        if (!isHost) {
-            alert('Only the host can play songs');
-            return;
-        }
-        if (!syncSocket?.connected) {
-            alert('Not connected to server');
-            return;
-        }
-        if (!isSynced) {
-            alert('Please click "Start Sync" first');
-            return;
-        }
-        
-        console.log('🎤 Host playing:', video.snippet.title);
-        syncSocket.emit('prepare-song', { roomCode, song: video });
-        
-        // Host also preloads
-        preloadSong(video).then(() => {
-            syncSocket.emit('device-ready', { roomCode });
-        });
-    };
+    console.log('🎤 playSong called. isHost:', isHost, 'isSynced:', isSynced, 'socket connected:', syncSocket?.connected);
+    
+    if (!isHost) {
+        alert('Only the host can play songs');
+        return;
+    }
+    if (!syncSocket?.connected) {
+        alert('Not connected to server');
+        return;
+    }
+    if (!isSynced) {
+        alert('Please click "Start Sync" first before playing songs.');
+        return;
+    }
+    
+    if (!video || !video.id || !video.id.videoId) {
+        console.error('Invalid video object:', video);
+        alert('Invalid song selected');
+        return;
+    }
+    
+    console.log('🎤 Host playing:', video.snippet.title);
+    setSelectedSong(video);  // ← ADD THIS LINE - Show song on host immediately
+    
+    // Tell server to prepare ALL devices
+    syncSocket.emit('prepare-song', { roomCode, song: video });
+    
+    // Host also preloads locally
+    preloadSong(video).then(() => {
+        console.log('✅ Host ready, sending ready signal');
+        syncSocket.emit('device-ready', { roomCode });
+    }).catch(err => {
+        console.error('Preload error:', err);
+        alert('Failed to load song. Please try again.');
+    });
+};
     
     // Host controls
     const handlePause = () => {
@@ -440,6 +456,55 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         {!isHost && <span className="host-only-badge">(Host only)</span>}
                     </div>
                     
+                     {/* COLUMN 1: SEARCH */}
+<div className="column search-column">
+    <div className="column-header">
+        <h3>🔍 Search Music</h3>
+    </div>
+    
+    {/* SOURCE TABS - YouTube and Spotify */}
+    <div className="source-tabs">
+        <button
+            className={`source-tab ${selectedSource === 'youtube' ? 'active' : ''}`}
+            onClick={() => setSelectedSource('youtube')}
+        >
+            🎬 YouTube
+        </button>
+        <button className="source-tab disabled" disabled>🎵 Spotify (Soon)</button>
+    </div>
+    
+    {/* SEARCH BAR */}
+    <div className="search-bar">
+        <input
+            type="text"
+            placeholder="Search for a song..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyPress={(e) => e.key === 'Enter' && searchYouTube()}
+        />
+        <button onClick={searchYouTube} disabled={searchLoading}>
+            {searchLoading ? '...' : '🔍'}
+        </button>
+    </div>
+    
+    {/* SEARCH RESULTS */}
+    <div className="search-results">
+        {searchResults.map((video) => (
+            <div key={video.id.videoId} className="song-item" onClick={() => playSong(video)}>
+                <img src={video.snippet.thumbnails.default?.url} alt="" />
+                <div className="song-info">
+                    <div className="song-title">{video.snippet.title.substring(0, 40)}</div>
+                    <div className="song-artist">{video.snippet.channelTitle}</div>
+                </div>
+                <button className="play-song-btn">▶</button>
+            </div>
+        ))}
+        {searchResults.length === 0 && !searchLoading && (
+            <div className="empty-state">🎤 Search for a song to play</div>
+        )}
+    </div>
+</div>
+
                     {isHost ? (
                         <>
                             <div className="search-bar">
