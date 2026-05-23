@@ -554,3 +554,14 @@ body {
         width: 100%;
     }
 }
+
+/* Ready state animations */
+@keyframes pulse {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+}
+
+.ready-waiting {
+    animation: pulse 1.5s infinite;
+}

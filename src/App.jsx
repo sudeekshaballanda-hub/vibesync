@@ -88,10 +88,57 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [syncStatus, setSyncStatus] = useState('Not Connected');
     const [roomMembers, setRoomMembers] = useState([]);
 
+    // Ready-state barrier states
+    const [isPreparing, setIsPreparing] = useState(false);
+    const [readyCount, setReadyCount] = useState(0);
+    const [totalDevices, setTotalDevices] = useState(1);
+    const [bufferingProgress, setBufferingProgress] = useState(0);
+    const [isDeviceReady, setIsDeviceReady] = useState(false);
+
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
+    // ============================================
+    // STEP 4: preloadSong FUNCTION
+    // ============================================
+    const preloadSong = async (song) => {
+        console.log(`📥 Preloading song: ${song.snippet.title}`);
+        setIsPreparing(true);
+        setBufferingProgress(0);
+        
+        return new Promise((resolve) => {
+            const audio = new Audio();
+            audio.preload = 'auto';
+            audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
+            
+            audio.addEventListener('progress', () => {
+                if (audio.buffered.length > 0) {
+                    const buffered = audio.buffered.end(0);
+                    const duration = audio.duration;
+                    const percent = (buffered / duration) * 100;
+                    setBufferingProgress(Math.min(100, percent));
+                }
+            });
+            
+            audio.addEventListener('canplay', () => {
+                console.log('✅ Song buffered, ready to play');
+                setBufferingProgress(100);
+                resolve();
+            });
+            
+            // Timeout fallback after 5 seconds
+            setTimeout(() => {
+                console.log('⚠️ Buffer timeout, proceeding anyway');
+                setBufferingProgress(100);
+                resolve();
+            }, 5000);
+            
+            audio.load();
+        });
+    };
+
+    // ============================================
     // Connect to backend server
-    // Connect to backend server
+    // ============================================
     useEffect(() => {
         const BACKEND_URL = 'https://vibesync-o3j5.onrender.com';
 
@@ -109,7 +156,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
         setSyncSocket(socket);
 
-        // Store timer ID locally to avoid closure issues
         let pendingTimer = null;
 
         socket.on('connect', () => {
@@ -160,33 +206,50 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (setMembers) setMembers(listeners || []);
         });
 
-        // FIXED: song-playing with proper timer management
-        socket.on('song-playing', ({ song, playAt, playedBy }) => {
-            console.log(`🎵 From ${playedBy}, play at: ${playAt}`);
-            console.log(`Current time: ${Date.now()}, delay: ${playAt - Date.now()}ms`);
-
-            // Clear any pending timer
-            if (pendingTimer) {
-                clearTimeout(pendingTimer);
-                pendingTimer = null;
-            }
-
+        // ============================================
+        // STEP 5: NEW EVENT HANDLERS for Ready-State Barrier
+        // ============================================
+        
+        // 1. Prepare song - all devices start buffering
+        socket.on('prepare-song', async ({ song, message }) => {
+            console.log(`📢 Host is preparing: ${song.snippet.title}`);
+            setSelectedSong(song);
+            setIsPreparing(true);
+            setReadyCount(0);
+            setIsDeviceReady(false);
+            
+            alert(`🎵 Host is preparing: ${song.snippet.title}. Buffering...`);
+            
+            // Preload the song
+            await preloadSong(song);
+            
+            // Once preloaded, send ready signal to server
+            console.log('🎯 Device ready, sending ready signal');
+            setIsDeviceReady(true);
+            socket.emit('device-ready', { roomCode });
+        });
+        
+        // 2. Ready update - shows how many devices are ready
+        socket.on('ready-update', ({ readyCount, totalDevices }) => {
+            setReadyCount(readyCount);
+            setTotalDevices(totalDevices);
+            console.log(`📊 Ready: ${readyCount}/${totalDevices} devices`);
+        });
+        
+        // 3. Play now - all devices play together
+        socket.on('play-now', ({ song, playAt }) => {
+            console.log(`🎬 PLAY NOW at ${playAt}`);
+            
             const now = Date.now();
             const delay = Math.max(0, playAt - now);
-
-            console.log(`⏰ Scheduling play in ${delay}ms`);
-
-            if (delay <= 50) {
-                // Play immediately
+            
+            console.log(`⏰ Starting playback in ${delay}ms`);
+            
+            setTimeout(() => {
+                setIsPreparing(false);
                 setSelectedSong(song);
-            } else {
-                // Schedule playback
-                pendingTimer = setTimeout(() => {
-                    console.log(`🎬 Executing scheduled play at ${Date.now()}`);
-                    setSelectedSong(song);
-                    pendingTimer = null;
-                }, delay);
-            }
+                alert(`🎵 Now playing: ${song.snippet.title} (SYNCED!)`);
+            }, delay);
         });
 
         socket.on('host-left', () => {
@@ -268,12 +331,24 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         setSearchLoading(false);
     };
 
-    // UPDATED: playSong function - Host emits to server
+    // ============================================
+    // STEP 6: UPDATED playSong FUNCTION with Ready-State Barrier
+    // ============================================
     const playSong = (video) => {
         if (isHost && syncSocket && syncSocket.connected && isSynced) {
-            console.log(`📤 Host requesting play at ${Date.now()}`);
-            syncSocket.emit('play-song', { roomCode, song: video });
-            alert(`🎵 Preparing "${video.snippet.title}" for sync...`);
+            console.log(`🎤 Host requesting to play: ${video.snippet.title}`);
+            
+            alert(`Preparing "${video.snippet.title}" for sync...`);
+            
+            // Tell server to prepare ALL devices
+            syncSocket.emit('prepare-play', { roomCode, song: video });
+            
+            // Host also preloads locally
+            preloadSong(video).then(() => {
+                console.log('✅ Host ready, sending ready signal');
+                syncSocket.emit('device-ready', { roomCode });
+            });
+            
         } else if (isHost && !isSynced) {
             alert('Please click "Start Sync" first before playing songs.');
         } else if (!isHost) {
@@ -368,6 +443,44 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }}>
                 {isSynced ? '✅ ' : '⏳ '} Status: {syncStatus}
             </div>
+
+            {/* ============================================ */}
+            {/* STEP 7: READY STATE UI - Shows buffering progress */}
+            {/* ============================================ */}
+            {isPreparing && (
+                <div style={{
+                    background: '#1a1a1a',
+                    padding: '15px 20px',
+                    borderBottom: '1px solid #2a2a2a',
+                    textAlign: 'center'
+                }}>
+                    <div style={{ color: '#4CAF50', fontWeight: 'bold' }}>
+                        🎵 Preparing to sync...
+                    </div>
+                    <div style={{ fontSize: '14px', marginTop: '5px' }}>
+                        {!isDeviceReady ? (
+                            `Buffering: ${Math.round(bufferingProgress)}%`
+                        ) : (
+                            `✅ Ready! Waiting for ${totalDevices - readyCount} more device${totalDevices - readyCount !== 1 ? 's' : ''}...`
+                        )}
+                    </div>
+                    <div style={{
+                        width: '100%',
+                        height: '4px',
+                        background: '#2a2a2a',
+                        borderRadius: '2px',
+                        marginTop: '10px',
+                        overflow: 'hidden'
+                    }}>
+                        <div style={{
+                            width: `${bufferingProgress}%`,
+                            height: '100%',
+                            background: '#4CAF50',
+                            transition: 'width 0.3s'
+                        }} />
+                    </div>
+                </div>
+            )}
 
             <div className="three-columns">
 
