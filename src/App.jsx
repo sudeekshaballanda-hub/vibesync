@@ -1,9 +1,9 @@
-﻿import React, { useState, useEffect } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import { RoomProvider, useRoom } from './context/RoomContext';
 import io from 'socket.io-client';
 import './index.css';
 
-// Landing Component
+// Landing Component (same as before)
 function Landing({ onEnterRoom }) {
     const { createRoom, joinRoom } = useRoom();
     const [name, setName] = useState('');
@@ -26,12 +26,7 @@ function Landing({ onEnterRoom }) {
         return (
             <div className="container">
                 <h1>🎵 Create Room</h1>
-                <input
-                    type="text"
-                    placeholder="Your name"
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                />
+                <input type="text" placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
                 <button onClick={handleCreate}>Create Room</button>
                 <button className="back" onClick={() => setMode(null)}>Back</button>
             </div>
@@ -42,19 +37,8 @@ function Landing({ onEnterRoom }) {
         return (
             <div className="container">
                 <h1>🎵 Join Room</h1>
-                <input
-                    type="text"
-                    placeholder="Your name"
-                    value={name}
-                    onChange={e => setName(e.target.value)}
-                />
-                <input
-                    type="text"
-                    placeholder="Room code"
-                    value={code}
-                    onChange={e => setCode(e.target.value.toUpperCase())}
-                    maxLength={6}
-                />
+                <input type="text" placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
+                <input type="text" placeholder="Room code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} maxLength={6} />
                 <button onClick={handleJoin}>Join Room</button>
                 <button className="back" onClick={() => setMode(null)}>Back</button>
             </div>
@@ -71,7 +55,7 @@ function Landing({ onEnterRoom }) {
     );
 }
 
-// RoomScreen Component with 3 columns and sync
+// RoomScreen Component
 function RoomScreen({ roomCode, isHost, onLeave }) {
     const { hostName, members, setMembers, messages, sendChatMessage } = useRoom();
     const [chatInput, setChatInput] = useState('');
@@ -80,279 +64,275 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [searchLoading, setSearchLoading] = useState(false);
     const [selectedSource, setSelectedSource] = useState('youtube');
     const [selectedSong, setSelectedSong] = useState(null);
-    const [scheduledPlayTimerId, setScheduledPlayTimerId] = useState(null);
-
-    // Sync related states
+    
+    // Sync states
     const [syncSocket, setSyncSocket] = useState(null);
     const [isSynced, setIsSynced] = useState(false);
     const [syncStatus, setSyncStatus] = useState('Not Connected');
     const [roomMembers, setRoomMembers] = useState([]);
-
-    // Ready-state barrier states
+    
+    // Playback states
     const [isPreparing, setIsPreparing] = useState(false);
     const [readyCount, setReadyCount] = useState(0);
     const [totalDevices, setTotalDevices] = useState(1);
     const [bufferingProgress, setBufferingProgress] = useState(0);
-    const [isDeviceReady, setIsDeviceReady] = useState(false);
+    const [countdownNumber, setCountdownNumber] = useState(null);
+    const [isPlaying, setIsPlaying] = useState(false);
+    const [currentTime, setCurrentTime] = useState(0);
+    const audioRef = useRef(null);
+    const iframeRef = useRef(null);
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
-    // ============================================
-    // STEP 4: preloadSong FUNCTION
-    // ============================================
+    // Preload song function
     const preloadSong = async (song) => {
-        console.log(`📥 Preloading song: ${song.snippet.title}`);
-        setIsPreparing(true);
+        console.log(`📥 Preloading: ${song.snippet.title}`);
         setBufferingProgress(0);
         
         return new Promise((resolve) => {
+            // Create hidden audio element for preloading
             const audio = new Audio();
             audio.preload = 'auto';
             audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
             
             audio.addEventListener('progress', () => {
                 if (audio.buffered.length > 0) {
-                    const buffered = audio.buffered.end(0);
-                    const duration = audio.duration;
-                    const percent = (buffered / duration) * 100;
+                    const percent = (audio.buffered.end(0) / audio.duration) * 100;
                     setBufferingProgress(Math.min(100, percent));
                 }
             });
             
             audio.addEventListener('canplay', () => {
-                console.log('✅ Song buffered, ready to play');
+                console.log('✅ Buffer complete');
                 setBufferingProgress(100);
                 resolve();
             });
             
-            // Timeout fallback after 5 seconds
             setTimeout(() => {
-                console.log('⚠️ Buffer timeout, proceeding anyway');
+                console.log('⚠️ Buffer timeout');
                 setBufferingProgress(100);
                 resolve();
-            }, 5000);
+            }, 8000);
             
             audio.load();
         });
     };
 
-    // ============================================
-    // Connect to backend server
-    // ============================================
+    // Connect to backend
     useEffect(() => {
         const BACKEND_URL = 'https://vibesync-o3j5.onrender.com';
-
-        console.log('🔌 Connecting to backend:', BACKEND_URL);
-
         const socket = io(BACKEND_URL, {
             transports: ['websocket', 'polling'],
             reconnection: true,
-            reconnectionDelay: 1000,
-            reconnectionDelayMax: 5000,
-            reconnectionAttempts: 10,
-            timeout: 30000,
-            forceNew: true
+            reconnectionAttempts: 10
         });
-
+        
         setSyncSocket(socket);
-
-        let pendingTimer = null;
-
+        
         socket.on('connect', () => {
-            console.log('✅ Socket connected! Transport:', socket.io.engine.transport.name);
+            console.log('✅ Connected');
             setSyncStatus('Connected');
         });
-
-        socket.on('disconnect', (reason) => {
-            console.log('❌ Socket disconnected:', reason);
-            setSyncStatus('Disconnected - Reconnecting...');
-        });
-
-        socket.on('connect_error', (error) => {
-            console.error('❌ Connection error:', error.message);
-            setSyncStatus('Connection failed - Retrying...');
-        });
-
-        socket.on('reconnect_attempt', (attempt) => {
-            console.log('🔄 Reconnect attempt:', attempt);
-        });
-
-        socket.on('reconnect', () => {
-            console.log('✅ Reconnected!');
-            setSyncStatus('Connected');
-        });
-
-        // Room events
+        
+        socket.on('disconnect', () => setSyncStatus('Disconnected'));
+        socket.on('connect_error', (e) => setSyncStatus('Connection failed'));
+        
         socket.on('room-created', () => {
-            console.log('Room created event received');
             setSyncStatus('Ready - You are Host');
             setIsSynced(true);
         });
-
+        
         socket.on('room-joined', () => {
-            console.log('Room joined event received');
             setSyncStatus('Connected - Waiting for Host');
             setIsSynced(true);
         });
-
-        socket.on('listener-joined', ({ name }) => {
-            console.log(`${name} joined the room`);
-            setRoomMembers(prev => [...prev, { id: Date.now(), name }]);
-        });
-
-        socket.on('members-update', ({ hostName, listeners }) => {
-            console.log('Members update:', { hostName, listeners });
-            setRoomMembers(listeners || []);
-            if (setMembers) setMembers(listeners || []);
-        });
-
-        // ============================================
-        // STEP 5: NEW EVENT HANDLERS for Ready-State Barrier
-        // ============================================
         
-        // 1. Prepare song - all devices start buffering
-        socket.on('prepare-song', async ({ song, message }) => {
-            console.log(`📢 Host is preparing: ${song.snippet.title}`);
+        socket.on('listener-joined', ({ name, totalDevices }) => {
+            setRoomMembers(prev => [...prev, { id: Date.now(), name }]);
+            setTotalDevices(totalDevices);
+        });
+        
+        socket.on('room-state', ({ currentSong, isPlaying, playbackState, currentTime }) => {
+            if (currentSong) setSelectedSong(currentSong);
+            setIsPlaying(isPlaying);
+            setCurrentTime(currentTime);
+        });
+        
+        // Prepare song - start buffering
+        socket.on('prepare-song', async ({ song }) => {
+            console.log('📢 Preparing song:', song.snippet.title);
             setSelectedSong(song);
             setIsPreparing(true);
-            setReadyCount(0);
-            setIsDeviceReady(false);
+            setCountdownNumber(null);
             
-            alert(`🎵 Host is preparing: ${song.snippet.title}. Buffering...`);
-            
-            // Preload the song
             await preloadSong(song);
             
-            // Once preloaded, send ready signal to server
-            console.log('🎯 Device ready, sending ready signal');
-            setIsDeviceReady(true);
+            // Send ready signal
             socket.emit('device-ready', { roomCode });
         });
         
-        // 2. Ready update - shows how many devices are ready
-        socket.on('ready-update', ({ readyCount, totalDevices }) => {
+        // Ready progress update
+        socket.on('ready-progress', ({ readyCount, totalDevices }) => {
             setReadyCount(readyCount);
             setTotalDevices(totalDevices);
-            console.log(`📊 Ready: ${readyCount}/${totalDevices} devices`);
         });
         
-        // 3. Play now - all devices play together
-        socket.on('play-now', ({ song, playAt }) => {
-            console.log(`🎬 PLAY NOW at ${playAt}`);
-            
-            const now = Date.now();
-            const delay = Math.max(0, playAt - now);
-            
-            console.log(`⏰ Starting playback in ${delay}ms`);
-            
-            setTimeout(() => {
+        // Countdown
+        socket.on('countdown', ({ number }) => {
+            setCountdownNumber(number);
+            if (number === 0) {
                 setIsPreparing(false);
-                setSelectedSong(song);
-                alert(`🎵 Now playing: ${song.snippet.title} (SYNCED!)`);
-            }, delay);
+                setCountdownNumber(null);
+            }
         });
-
+        
+        // Play now!
+        socket.on('play-now', ({ song, playAt, startTime }) => {
+            console.log('🎬 PLAY NOW!');
+            setSelectedSong(song);
+            setIsPlaying(true);
+            setCurrentTime(startTime);
+            setIsPreparing(false);
+            setCountdownNumber(null);
+            
+            // Update iframe to play
+            setTimeout(() => {
+                if (iframeRef.current) {
+                    const videoId = song.id.videoId;
+                    iframeRef.current.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
+                }
+            }, 100);
+        });
+        
+        // Host controls (listeners follow)
+        socket.on('sync-pause', () => {
+            if (!isHost) {
+                setIsPlaying(false);
+                // Pause iframe
+                if (iframeRef.current) {
+                    // YouTube iframe pause requires postMessage
+                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+                }
+            }
+        });
+        
+        socket.on('sync-resume', () => {
+            if (!isHost) {
+                setIsPlaying(true);
+                if (iframeRef.current) {
+                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+                }
+            }
+        });
+        
+        socket.on('sync-seek', ({ position }) => {
+            if (!isHost) {
+                setCurrentTime(position);
+            }
+        });
+        
+        socket.on('sync-stop', () => {
+            if (!isHost) {
+                setIsPlaying(false);
+                setSelectedSong(null);
+            }
+        });
+        
         socket.on('host-left', () => {
-            alert('Host left. Returning home...');
+            alert('Host left the room');
             onLeave();
         });
+        
+        return () => socket.disconnect();
+    }, [isHost, onLeave]);
 
-        socket.on('error', (msg) => {
-            console.error('Server error:', msg);
-            alert(msg);
-        });
-
-        return () => {
-            if (pendingTimer) {
-                clearTimeout(pendingTimer);
-            }
-            if (socket) socket.disconnect();
-        };
-    }, [isHost, onLeave, setMembers]);
-
-    // Timer cleanup on unmount
-    useEffect(() => {
-        return () => {
-            if (scheduledPlayTimerId) {
-                clearTimeout(scheduledPlayTimerId);
-            }
-        };
-    }, [scheduledPlayTimerId]);
-
-    // Start sync function
+    // Start sync
     const startSync = () => {
-        if (!syncSocket || !syncSocket.connected) {
-            alert('Connecting to server... Please wait a moment.');
-            console.log('Socket status:', syncSocket?.connected);
+        if (!syncSocket?.connected) {
+            alert('Connecting to server...');
             return;
         }
-
+        
         if (isHost) {
-            console.log('Emitting create-room for:', roomCode, hostName);
             syncSocket.emit('create-room', { roomCode, hostName });
             setIsSynced(true);
             setSyncStatus('Host - Sync Active');
         } else {
-            console.log('Emitting join-room for:', roomCode, hostName);
             syncSocket.emit('join-room', { roomCode, listenerName: hostName });
             setIsSynced(true);
             setSyncStatus('Listener - Connected');
         }
     };
 
+    // Search YouTube
     const searchYouTube = async () => {
-        if (!searchQuery.trim()) {
-            alert('Please enter a search term');
-            return;
-        }
-
+        if (!searchQuery.trim()) return;
         setSearchLoading(true);
-
         try {
             const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&q=${encodeURIComponent(searchQuery)}&type=video&key=${YOUTUBE_API_KEY}`;
-
             const response = await fetch(url);
             const data = await response.json();
-
             if (response.status === 200 && data.items) {
                 setSearchResults(data.items);
-                if (data.items.length === 0) {
-                    alert('No results found. Try different keywords.');
-                }
             } else {
-                console.error('API Error:', data.error);
-                alert('Search failed. Check console for details.');
-                setSearchResults([]);
+                alert('Search failed');
             }
         } catch (err) {
-            console.error('Network error:', err);
-            alert('Network error. Check console for details.');
+            console.error(err);
+            alert('Network error');
         }
         setSearchLoading(false);
     };
 
-    // ============================================
-    // STEP 6: UPDATED playSong FUNCTION with Ready-State Barrier
-    // ============================================
+    // Host plays a song
     const playSong = (video) => {
-        if (isHost && syncSocket && syncSocket.connected && isSynced) {
-            console.log(`🎤 Host requesting to play: ${video.snippet.title}`);
-            
-            alert(`Preparing "${video.snippet.title}" for sync...`);
-            
-            // Tell server to prepare ALL devices
-            syncSocket.emit('prepare-play', { roomCode, song: video });
-            
-            // Host also preloads locally
-            preloadSong(video).then(() => {
-                console.log('✅ Host ready, sending ready signal');
-                syncSocket.emit('device-ready', { roomCode });
-            });
-            
-        } else if (isHost && !isSynced) {
-            alert('Please click "Start Sync" first before playing songs.');
-        } else if (!isHost) {
+        if (!isHost) {
             alert('Only the host can play songs');
+            return;
+        }
+        if (!syncSocket?.connected) {
+            alert('Not connected to server');
+            return;
+        }
+        if (!isSynced) {
+            alert('Please click "Start Sync" first');
+            return;
+        }
+        
+        console.log('🎤 Host playing:', video.snippet.title);
+        syncSocket.emit('prepare-song', { roomCode, song: video });
+        
+        // Host also preloads
+        preloadSong(video).then(() => {
+            syncSocket.emit('device-ready', { roomCode });
+        });
+    };
+    
+    // Host controls
+    const handlePause = () => {
+        if (isHost && syncSocket?.connected && isPlaying) {
+            syncSocket.emit('host-pause', { roomCode });
+        }
+    };
+    
+    const handleResume = () => {
+        if (isHost && syncSocket?.connected && !isPlaying && selectedSong) {
+            syncSocket.emit('host-resume', { roomCode });
+        }
+    };
+    
+    const handleStop = () => {
+        if (isHost && syncSocket?.connected && selectedSong) {
+            syncSocket.emit('host-stop', { roomCode });
+            setSelectedSong(null);
+            setIsPlaying(false);
+        }
+    };
+    
+    const handleSeek = (position) => {
+        if (isHost && syncSocket?.connected) {
+            syncSocket.emit('host-seek', { roomCode, position });
+            setCurrentTime(position);
         }
     };
 
@@ -363,31 +343,71 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
-    // If a song is selected, show player
+    // Player view
     if (selectedSong) {
         return (
             <div className="player-view">
                 <div className="player-header">
                     <h2>🎵 Now Playing</h2>
+                    {isHost && (
+                        <div className="host-controls">
+                            {isPlaying ? (
+                                <button onClick={handlePause}>⏸ Pause</button>
+                            ) : (
+                                <button onClick={handleResume}>▶ Resume</button>
+                            )}
+                            <button onClick={handleStop}>⏹ Stop</button>
+                        </div>
+                    )}
                     <button onClick={() => setSelectedSong(null)}>← Back to Room</button>
                 </div>
+                
+                {/* Countdown Display */}
+                {countdownNumber !== null && countdownNumber > 0 && (
+                    <div className="countdown-overlay">
+                        <div className="countdown-number">{countdownNumber}</div>
+                        <div className="countdown-text">Get ready...</div>
+                    </div>
+                )}
+                
+                {/* Buffering Progress */}
+                {isPreparing && countdownNumber === null && (
+                    <div className="buffering-container">
+                        <div className="buffering-text">Buffering: {Math.round(bufferingProgress)}%</div>
+                        <div className="buffering-bar">
+                            <div className="buffering-fill" style={{ width: `${bufferingProgress}%` }} />
+                        </div>
+                        <div className="buffering-status">
+                            Waiting for {totalDevices - readyCount} more device{totalDevices - readyCount !== 1 ? 's' : ''}...
+                        </div>
+                    </div>
+                )}
+                
                 <div className="player-container">
                     <h3>{selectedSong.snippet.title}</h3>
                     <iframe
+                        ref={iframeRef}
                         title={selectedSong.snippet.title}
                         width="100%"
                         height="400"
-                        src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1`}
+                        src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?enablejsapi=1`}
                         frameBorder="0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
                         allowFullScreen
                     />
                 </div>
+                
+                {/* Show message for listeners */}
+                {!isHost && (
+                    <div className="listener-info">
+                        🎧 You are in sync with the host. Host controls playback.
+                    </div>
+                )}
             </div>
         );
     }
 
-    // Combine host + listeners for display
+    // Members display
     const allMembers = [
         { id: 'host', name: hostName || 'Host', isHost: true },
         ...roomMembers.map(m => ({ ...m, isHost: false }))
@@ -401,136 +421,54 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     <span className="room-badge">Room: {roomCode}</span>
                 </div>
                 <div className="header-buttons">
-                    <button
-                        onClick={startSync}
-                        disabled={isSynced}
-                        className={`sync-btn ${isSynced ? 'synced' : ''}`}
-                        style={{
-                            background: isSynced ? '#4CAF50' : '#2196F3',
-                            padding: '8px 20px',
-                            borderRadius: '25px',
-                            border: 'none',
-                            color: 'white',
-                            cursor: isSynced ? 'default' : 'pointer',
-                            fontWeight: 'bold'
-                        }}
-                    >
+                    <button onClick={startSync} disabled={isSynced} className={`sync-btn ${isSynced ? 'synced' : ''}`}>
                         {isSynced ? '✅ Synced' : '🔗 Start Sync'}
                     </button>
                     <button onClick={onLeave} className="leave-btn">🚪 Leave Room</button>
                 </div>
             </div>
 
-            {/* Connection Status */}
-            <div style={{
-                fontSize: '12px',
-                padding: '4px 20px',
-                background: '#1a1a1a',
-                borderBottom: '1px solid #2a2a2a',
-                color: syncSocket?.connected ? '#4CAF50' : '#ff9800',
-                textAlign: 'center'
-            }}>
-                📡 Socket: {syncSocket?.connected ? '🟢 Connected' : '🟡 Connecting...'} |
-                Transport: {syncSocket?.io?.engine?.transport?.name || 'N/A'}
+            <div className="sync-status-bar">
+                📡 Status: {syncStatus} {isSynced ? '✅' : '⏳'}
             </div>
-
-            <div className="sync-status-bar" style={{
-                background: '#1a1a1a',
-                padding: '8px 20px',
-                fontSize: '12px',
-                color: isSynced ? '#4CAF50' : '#B0B0B0',
-                borderBottom: '1px solid #2a2a2a'
-            }}>
-                {isSynced ? '✅ ' : '⏳ '} Status: {syncStatus}
-            </div>
-
-            {/* ============================================ */}
-            {/* STEP 7: READY STATE UI - Shows buffering progress */}
-            {/* ============================================ */}
-            {isPreparing && (
-                <div style={{
-                    background: '#1a1a1a',
-                    padding: '15px 20px',
-                    borderBottom: '1px solid #2a2a2a',
-                    textAlign: 'center'
-                }}>
-                    <div style={{ color: '#4CAF50', fontWeight: 'bold' }}>
-                        🎵 Preparing to sync...
-                    </div>
-                    <div style={{ fontSize: '14px', marginTop: '5px' }}>
-                        {!isDeviceReady ? (
-                            `Buffering: ${Math.round(bufferingProgress)}%`
-                        ) : (
-                            `✅ Ready! Waiting for ${totalDevices - readyCount} more device${totalDevices - readyCount !== 1 ? 's' : ''}...`
-                        )}
-                    </div>
-                    <div style={{
-                        width: '100%',
-                        height: '4px',
-                        background: '#2a2a2a',
-                        borderRadius: '2px',
-                        marginTop: '10px',
-                        overflow: 'hidden'
-                    }}>
-                        <div style={{
-                            width: `${bufferingProgress}%`,
-                            height: '100%',
-                            background: '#4CAF50',
-                            transition: 'width 0.3s'
-                        }} />
-                    </div>
-                </div>
-            )}
 
             <div className="three-columns">
-
-                {/* COLUMN 1: SEARCH */}
+                {/* SEARCH COLUMN - Only host can search */}
                 <div className="column search-column">
                     <div className="column-header">
                         <h3>🔍 Search Music</h3>
+                        {!isHost && <span className="host-only-badge">(Host only)</span>}
                     </div>
-
-                    <div className="source-tabs">
-                        <button
-                            className={`source-tab ${selectedSource === 'youtube' ? 'active' : ''}`}
-                            onClick={() => setSelectedSource('youtube')}
-                        >
-                            🎬 YouTube
-                        </button>
-                        <button className="source-tab disabled" disabled>🎵 Spotify (Soon)</button>
-                    </div>
-
-                    <div className="search-bar">
-                        <input
-                            type="text"
-                            placeholder="Search for a song..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            onKeyPress={(e) => e.key === 'Enter' && searchYouTube()}
-                        />
-                        <button onClick={searchYouTube} disabled={searchLoading}>
-                            {searchLoading ? '...' : '🔍'}
-                        </button>
-                    </div>
-
-                    <div className="search-results">
-                        {searchResults.map((video) => (
-                            <div key={video.id.videoId} className="song-item" onClick={() => playSong(video)}>
-                                <img src={video.snippet.thumbnails.default?.url} alt="" />
-                                <div className="song-info">
-                                    <div className="song-title">{video.snippet.title.substring(0, 40)}</div>
-                                    <div className="song-artist">{video.snippet.channelTitle}</div>
-                                </div>
-                                <button className="play-song-btn">▶</button>
+                    
+                    {isHost ? (
+                        <>
+                            <div className="search-bar">
+                                <input type="text" placeholder="Search for a song..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} onKeyPress={e => e.key === 'Enter' && searchYouTube()} />
+                                <button onClick={searchYouTube} disabled={searchLoading}>{searchLoading ? '...' : '🔍'}</button>
                             </div>
-                        ))}
-                        {searchResults.length === 0 && !searchLoading && (
-                            <div className="empty-state">🎤 Search for a song to play</div>
-                        )}
-                    </div>
+                            <div className="search-results">
+                                {searchResults.map((video) => (
+                                    <div key={video.id.videoId} className="song-item" onClick={() => playSong(video)}>
+                                        <img src={video.snippet.thumbnails.default?.url} alt="" />
+                                        <div className="song-info">
+                                            <div className="song-title">{video.snippet.title.substring(0, 40)}</div>
+                                            <div className="song-artist">{video.snippet.channelTitle}</div>
+                                        </div>
+                                        <button className="play-song-btn">▶</button>
+                                    </div>
+                                ))}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="listener-waiting">
+                            <div className="waiting-icon">🎵</div>
+                            <p>Waiting for host to select a song...</p>
+                            <p className="waiting-sub">The host controls all playback</p>
+                        </div>
+                    )}
                 </div>
 
-                {/* COLUMN 2: MEMBERS */}
+                {/* MEMBERS COLUMN */}
                 <div className="column members-column">
                     <div className="column-header">
                         <h3>👥 Members</h3>
@@ -546,14 +484,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                             </div>
                         ))}
                     </div>
-                    {isHost && (
-                        <div className="host-tip">
-                            ✨ Share code: <strong>{roomCode}</strong>
-                        </div>
-                    )}
                 </div>
 
-                {/* COLUMN 3: CHAT */}
+                {/* CHAT COLUMN */}
                 <div className="column chat-column">
                     <div className="column-header">
                         <h3>💬 Group Chat</h3>
@@ -572,13 +505,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         )}
                     </div>
                     <div className="chat-input-area">
-                        <input
-                            type="text"
-                            placeholder="Type a message..."
-                            value={chatInput}
-                            onChange={(e) => setChatInput(e.target.value)}
-                            onKeyPress={(e) => e.key === 'Enter' && sendMessage()}
-                        />
+                        <input type="text" placeholder="Type a message..." value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyPress={e => e.key === 'Enter' && sendMessage()} />
                         <button onClick={sendMessage}>Send</button>
                     </div>
                 </div>
