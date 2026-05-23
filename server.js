@@ -23,17 +23,17 @@ io.on('connection', (socket) => {
         rooms.set(roomCode, {
             hostId: socket.id,
             hostName: hostName,
-            listeners: new Map(), // Map of socketId -> { name, ready }
+            listeners: new Map(),
             currentSong: null,
             isPlaying: false,
             currentTime: 0,
-            playbackState: 'stopped', // stopped, preparing, countdown, playing, paused
+            playbackState: 'stopped',
             readyCount: 0,
             totalDevices: 1,
-            countdownTimer: null
+            hostReady: false
         });
         socket.emit('room-created', { roomCode });
-        console.log(`📢 Room ${roomCode} by ${hostName}`);
+        console.log(`📢 Room ${roomCode} created by ${hostName}`);
     });
 
     // Join room (Listener)
@@ -43,6 +43,8 @@ io.on('connection', (socket) => {
             socket.join(roomCode);
             room.listeners.set(socket.id, { name: listenerName, ready: false });
             room.totalDevices = room.listeners.size + 1;
+            
+            console.log(`👤 ${listenerName} joined ${roomCode} (Total: ${room.totalDevices} devices)`);
             
             // Notify host
             io.to(room.hostId).emit('listener-joined', { 
@@ -59,28 +61,30 @@ io.on('connection', (socket) => {
             });
             
             socket.emit('room-joined', { roomCode });
-            console.log(`👤 ${listenerName} joined ${roomCode} (${room.totalDevices} total devices)`);
         } else {
             socket.emit('error', 'Room not found');
+            console.log(`❌ Room ${roomCode} not found`);
         }
     });
 
-    // Host prepares a song (starts preload phase)
+    // Host prepares a song - THIS IS THE KEY EVENT
     socket.on('prepare-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.currentSong = song;
             room.playbackState = 'preparing';
             room.readyCount = 0;
+            room.hostReady = false;
             
             // Reset all listener ready states
             for (let [id, listener] of room.listeners) {
                 listener.ready = false;
             }
             
-            console.log(`📢 Host preparing: ${song.snippet.title} in ${roomCode}`);
+            console.log(`📢 Host preparing song in ${roomCode}: ${song.snippet.title}`);
+            console.log(`📢 Broadcasting to ${room.listeners.size + 1} devices`);
             
-            // Tell EVERYONE to prepare (including host)
+            // IMPORTANT: Send to ALL devices in room (including host)
             io.to(roomCode).emit('prepare-song', { 
                 song, 
                 message: 'Buffering song... Please wait.'
@@ -88,26 +92,30 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Device reports ready after buffering
+    // Device reports ready
     socket.on('device-ready', ({ roomCode }) => {
         const room = rooms.get(roomCode);
         if (room) {
             // Mark this device as ready
             if (socket.id === room.hostId) {
                 room.hostReady = true;
+                console.log(`✅ Host ready`);
             } else {
                 const listener = room.listeners.get(socket.id);
-                if (listener) listener.ready = true;
+                if (listener) {
+                    listener.ready = true;
+                    console.log(`✅ Listener ${listener.name} ready`);
+                }
             }
             
             // Count ready devices
-            let readyCount = (room.hostReady ? 1 : 0);
+            let readyCount = room.hostReady ? 1 : 0;
             for (let [id, listener] of room.listeners) {
                 if (listener.ready) readyCount++;
             }
             room.readyCount = readyCount;
             
-            console.log(`✅ Device ready (${room.readyCount}/${room.totalDevices})`);
+            console.log(`📊 Ready: ${room.readyCount}/${room.totalDevices}`);
             
             // Notify host about progress
             io.to(room.hostId).emit('ready-progress', {
@@ -117,7 +125,7 @@ io.on('connection', (socket) => {
             
             // Check if ALL devices are ready
             if (room.readyCount >= room.totalDevices && room.playbackState === 'preparing') {
-                console.log(`🎯 ALL DEVICES READY! Starting countdown...`);
+                console.log(`🎯 ALL ${room.totalDevices} DEVICES READY! Starting countdown...`);
                 room.playbackState = 'countdown';
                 
                 // Start 5-second countdown for everyone
@@ -125,7 +133,6 @@ io.on('connection', (socket) => {
                     setTimeout(() => {
                         io.to(roomCode).emit('countdown', { number: i });
                         if (i === 0) {
-                            // Playback starts!
                             const playAt = Date.now();
                             room.playbackState = 'playing';
                             room.isPlaying = true;
@@ -137,13 +144,13 @@ io.on('connection', (socket) => {
                             });
                             console.log(`▶️ Playback started at ${playAt}`);
                         }
-                    }, i * 1000);
+                    }, (5 - i) * 1000);
                 }
             }
         }
     });
 
-    // Host controls (only host can send these)
+    // Host controls
     socket.on('host-pause', ({ roomCode }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id && room.isPlaying) {
@@ -164,15 +171,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('host-seek', ({ roomCode, position }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
-            room.currentTime = position;
-            io.to(roomCode).emit('sync-seek', { position });
-            console.log(`⏩ Host seek to ${position}ms in ${roomCode}`);
-        }
-    });
-
     socket.on('host-stop', ({ roomCode }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
@@ -180,7 +178,16 @@ io.on('connection', (socket) => {
             room.playbackState = 'stopped';
             room.currentSong = null;
             io.to(roomCode).emit('sync-stop');
-            console.log(`⏹️ Host stopped playback in ${roomCode}`);
+            console.log(`⏹️ Host stopped in ${roomCode}`);
+        }
+    });
+
+    socket.on('host-seek', ({ roomCode, position }) => {
+        const room = rooms.get(roomCode);
+        if (room && room.hostId === socket.id) {
+            room.currentTime = position;
+            io.to(roomCode).emit('sync-seek', { position });
+            console.log(`⏩ Host seek to ${position}ms in ${roomCode}`);
         }
     });
 
@@ -195,9 +202,10 @@ io.on('connection', (socket) => {
                 break;
             }
             if (room.listeners.has(socket.id)) {
+                const listener = room.listeners.get(socket.id);
                 room.listeners.delete(socket.id);
                 room.totalDevices = room.listeners.size + 1;
-                console.log(`👋 Listener left ${code} (${room.totalDevices} devices remain)`);
+                console.log(`👋 Listener ${listener?.name} left ${code} (${room.totalDevices} devices remain)`);
                 break;
             }
         }
