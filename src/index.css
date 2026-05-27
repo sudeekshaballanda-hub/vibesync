@@ -778,3 +778,11 @@ body {
     font-size: 12px;
     font-weight: bold;
 }
+
+.debug-info {
+    font-size: 10px;
+    color: #ff9800;
+    margin-top: 8px;
+    font-family: monospace;
+    word-break: break-all;
+}

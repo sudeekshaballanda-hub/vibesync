@@ -55,7 +55,7 @@ function Landing({ onEnterRoom }) {
 }
 
 function RoomScreen({ roomCode, isHost, onLeave }) {
-    const { hostName, members, setMembers, messages, setMessages, sendChatMessage } = useRoom();
+    const { hostName, members, setMembers, messages, sendChatMessage } = useRoom();
     const [chatInput, setChatInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [searchResults, setSearchResults] = useState([]);
@@ -70,12 +70,13 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [chatMessages, setChatMessages] = useState([]);
     
     // Sync phase states
-    const [syncPhase, setSyncPhase] = useState('idle'); // idle, preloading, countdown, playing
+    const [syncPhase, setSyncPhase] = useState('idle');
     const [preloadProgress, setPreloadProgress] = useState(0);
     const [completeCount, setCompleteCount] = useState(0);
     const [totalDevices, setTotalDevices] = useState(1);
     const [countdownNumber, setCountdownNumber] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
+    const [debugInfo, setDebugInfo] = useState('');
     
     const iframeRef = useRef(null);
     const hiddenIframeRef = useRef(null);
@@ -83,16 +84,17 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
-    // COMPLETE PRELOAD FUNCTION - Uses both audio and hidden iframe
-    const completePreload = async (song) => {
-        console.log(`📥 COMPLETE PRELOAD: ${song.snippet.title}`);
+    // FULL PRELOAD FUNCTION - Downloads and verifies playback readiness
+    const fullPreloadAndVerify = async (song) => {
+        console.log(`[CLIENT] 📥 Starting full preload: ${song.snippet.title}`);
         setPreloadProgress(0);
         
         return new Promise((resolve) => {
             let progress = 0;
-            let isResolved = false;
+            let preloadComplete = false;
+            let playbackReady = false;
             
-            // Method 1: Hidden iframe preload
+            // Hidden iframe preload
             const hiddenIframe = document.createElement('iframe');
             hiddenIframe.style.position = 'absolute';
             hiddenIframe.style.top = '-9999px';
@@ -105,42 +107,57 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             document.body.appendChild(hiddenIframe);
             hiddenIframeRef.current = hiddenIframe;
             
-            // Method 2: Audio element preload
+            // Audio element for precise buffering
             const audio = new Audio();
             audio.preload = 'auto';
             audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
             audioRef.current = audio;
             
             audio.addEventListener('progress', () => {
-                if (audio.buffered.length > 0 && !isResolved) {
+                if (audio.buffered.length > 0 && !preloadComplete) {
                     const buffered = audio.buffered.end(0);
                     const duration = audio.duration;
                     if (duration > 0) {
                         progress = (buffered / duration) * 100;
                         setPreloadProgress(Math.min(100, progress));
-                        console.log(`📥 Preload progress: ${Math.round(progress)}%`);
+                        console.log(`[CLIENT] 📥 Preload: ${Math.round(progress)}%`);
                     }
                 }
             });
             
-            const complete = () => {
-                if (!isResolved) {
-                    isResolved = true;
-                    console.log(`✅ COMPLETE PRELOAD DONE: ${song.snippet.title}`);
-                    setPreloadProgress(100);
+            const verifyPlaybackReady = () => {
+                if (!playbackReady && preloadComplete) {
+                    playbackReady = true;
+                    console.log(`[CLIENT] 🎯 Playback ready verification complete`);
                     resolve();
                 }
             };
             
-            audio.addEventListener('canplaythrough', complete);
-            hiddenIframe.addEventListener('load', complete);
+            audio.addEventListener('canplaythrough', () => {
+                console.log(`[CLIENT] ✅ Audio can play through - preload complete`);
+                preloadComplete = true;
+                setPreloadProgress(100);
+                verifyPlaybackReady();
+            });
             
-            setTimeout(() => {
-                if (!isResolved) {
-                    console.log(`⚠️ Preload timeout, proceeding anyway`);
-                    complete();
+            hiddenIframe.addEventListener('load', () => {
+                console.log(`[CLIENT] ✅ Hidden iframe loaded`);
+                if (!preloadComplete) {
+                    preloadComplete = true;
+                    setPreloadProgress(100);
+                    verifyPlaybackReady();
                 }
-            }, 10000);
+            });
+            
+            // Fallback timeout
+            setTimeout(() => {
+                if (!playbackReady) {
+                    console.log(`[CLIENT] ⚠️ Playback verification timeout, proceeding anyway`);
+                    preloadComplete = true;
+                    setPreloadProgress(100);
+                    resolve();
+                }
+            }, 15000);
             
             audio.load();
         });
@@ -151,18 +168,34 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         const socket = io(BACKEND_URL, { transports: ['websocket', 'polling'], reconnection: true });
         setSyncSocket(socket);
         
-        socket.on('connect', () => { console.log('✅ Connected'); setSyncStatus('Connected'); });
+        socket.on('connect', () => { console.log('[CLIENT] ✅ Connected to server'); setSyncStatus('Connected'); });
         socket.on('disconnect', () => setSyncStatus('Disconnected'));
         socket.on('connect_error', () => setSyncStatus('Connection failed'));
-        socket.on('room-created', () => { setSyncStatus('Host - Ready'); setIsSynced(true); });
-        socket.on('room-joined', () => { setSyncStatus('Listener - Connected'); setIsSynced(true); });
+        
+        socket.on('room-created', () => { 
+            console.log('[CLIENT] Room created - Host mode');
+            setSyncStatus('Host - Ready'); 
+            setIsSynced(true); 
+        });
+        
+        socket.on('room-joined', () => { 
+            console.log('[CLIENT] Room joined - Listener mode');
+            setSyncStatus('Listener - Connected'); 
+            setIsSynced(true); 
+        });
+        
+        socket.on('members-update', ({ members }) => {
+            console.log('[CLIENT] Members update:', members);
+            setRoomMembers(members.filter(m => !m.isHost));
+            setTotalDevices(members.length);
+        });
         
         socket.on('listener-joined', ({ name, totalDevices }) => {
             setRoomMembers(prev => [...prev, { id: Date.now(), name }]);
             setTotalDevices(totalDevices);
         });
         
-        // Chat history
+        // Chat
         socket.on('chat-history', ({ messages }) => {
             setChatMessages(messages || []);
         });
@@ -171,52 +204,57 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setChatMessages(prev => [...prev, message]);
         });
         
-        // START PRELOAD - All devices preload completely
+        // START PRELOAD - Phase 1: Download
         socket.on('preload-song', async ({ song }) => {
-            console.log('📢 Starting complete preload for:', song.snippet.title);
+            console.log('[CLIENT] 📢 Received preload command for:', song.snippet.title);
             setSelectedSong(song);
             setSyncPhase('preloading');
             setCountdownNumber(null);
             
-            await completePreload(song);
+            await fullPreloadAndVerify(song);
             
-            console.log('✅ Sending preload-complete signal');
+            console.log('[CLIENT] 📤 Sending preload-complete to server');
             socket.emit('preload-complete', { roomCode });
+        });
+        
+        // Verify playback ready - Phase 2: Server asks for final readiness
+        socket.on('verify-playback-ready', () => {
+            console.log('[CLIENT] 🎯 Received playback-ready verification request');
+            console.log('[CLIENT] 📤 Sending playback-ready to server');
+            socket.emit('playback-ready', { roomCode });
         });
         
         // Preload progress update
         socket.on('preload-progress', ({ completeCount, totalDevices }) => {
             setCompleteCount(completeCount);
             setTotalDevices(totalDevices);
+            setDebugInfo(`Preload: ${completeCount}/${totalDevices} devices ready`);
+            console.log(`[CLIENT] 📊 Progress: ${completeCount}/${totalDevices}`);
         });
         
-        // COUNTDOWN starts
+        // COUNTDOWN
         socket.on('countdown-start', ({ number }) => {
-            console.log(`⏰ Countdown started: ${number}`);
+            console.log(`[CLIENT] ⏰ Countdown started: ${number}`);
             setSyncPhase('countdown');
             setCountdownNumber(number);
         });
         
         socket.on('countdown-tick', ({ number }) => {
             setCountdownNumber(number);
-            if (number === 0) {
-                setCountdownNumber(null);
-            }
+            if (number === 0) setCountdownNumber(null);
         });
         
-        // PLAY NOW - Instant playback (no buffering!)
+        // PLAY NOW
         socket.on('play-now', ({ song }) => {
-            console.log('🎬 PLAY NOW! Instant playback - no buffering needed');
+            console.log('[CLIENT] 🎬 PLAY NOW! Starting playback');
             setSyncPhase('playing');
             setIsPlaying(true);
             setSelectedSong(song);
             
-            // Update visible iframe
             if (iframeRef.current) {
                 iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
             }
             
-            // Clean up hidden preload elements
             if (hiddenIframeRef.current) {
                 hiddenIframeRef.current.remove();
                 hiddenIframeRef.current = null;
@@ -250,6 +288,12 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         
         socket.on('host-left', () => { alert('Host left the room'); onLeave(); });
         
+        // Debug
+        socket.on('room-state-debug', ({ states, syncPhase }) => {
+            console.log('[DEBUG] Room states:', states);
+            setDebugInfo(`Phase: ${syncPhase} | States: ${JSON.stringify(states)}`);
+        });
+        
         return () => socket.disconnect();
     }, [isHost, onLeave]);
 
@@ -277,26 +321,23 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         setSearchLoading(false);
     };
 
-    // Host selects song - follows complete preload barrier
     const playSong = (video) => {
         if (!isHost) { alert('Only host can play'); return; }
         if (!syncSocket?.connected) { alert('Not connected to server'); return; }
         if (!isSynced) { alert('Click "Start Sync" first'); return; }
         if (syncPhase !== 'idle') { alert('A song is already being prepared'); return; }
         
-        console.log('🎤 Host selecting song:', video.snippet.title);
+        console.log('[CLIENT] 🎤 Host selecting song:', video.snippet.title);
         setSelectedSong(video);
         
-        // Host also completes full preload (follows same barrier)
-        completePreload(video).then(() => {
-            console.log('✅ Host preload complete');
+        fullPreloadAndVerify(video).then(() => {
+            console.log('[CLIENT] ✅ Host preload and verification complete');
             syncSocket.emit('preload-complete', { roomCode });
         });
         
         syncSocket.emit('prepare-song', { roomCode, song: video });
     };
     
-    // Host controls - only during playing phase
     const handlePause = () => {
         if (isHost && syncPhase === 'playing' && syncSocket?.connected && isPlaying) {
             setIsPlaying(false);
@@ -337,9 +378,21 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
-    // ============================================
+    const getDebugButton = () => {
+        if (isHost && syncSocket?.connected) {
+            return (
+                <button 
+                    onClick={() => syncSocket.emit('get-room-state', { roomCode })}
+                    style={{ fontSize: '10px', marginLeft: '10px', padding: '2px 6px' }}
+                >
+                    Debug
+                </button>
+            );
+        }
+        return null;
+    };
+
     // PLAYING VIEW
-    // ============================================
     if (syncPhase === 'playing' && selectedSong) {
         return (
             <div className="player-view">
@@ -381,9 +434,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         );
     }
     
-    // ============================================
     // PRELOADING / COUNTDOWN VIEW
-    // ============================================
     if (selectedSong && syncPhase !== 'playing') {
         return (
             <div className="player-view">
@@ -391,9 +442,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     <h2>🎵 Preparing to Play</h2>
                     {isHost && <button onClick={handleStop}>⏹ Cancel</button>}
                     <button onClick={handleStop}>← Back</button>
+                    {getDebugButton()}
                 </div>
                 
-                {/* COUNTDOWN - Shows on ALL devices */}
                 {countdownNumber !== null && countdownNumber > 0 && (
                     <div className="countdown-overlay">
                         <div className="countdown-number">{countdownNumber}</div>
@@ -401,7 +452,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     </div>
                 )}
                 
-                {/* PRELOADING PROGRESS - Only before countdown */}
                 {syncPhase === 'preloading' && !countdownNumber && (
                     <div className="buffering-container">
                         <div className="buffering-text">Downloading song... {Math.round(preloadProgress)}%</div>
@@ -412,15 +462,25 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                             {completeCount}/{totalDevices} devices ready
                             {completeCount < totalDevices && ' - Waiting for all devices to finish downloading...'}
                         </div>
+                        {debugInfo && <div className="debug-info">{debugInfo}</div>}
                     </div>
                 )}
                 
-                {/* READY BUT WAITING */}
-                {syncPhase === 'preloading' && preloadProgress === 100 && !countdownNumber && (
+                {syncPhase === 'verifying' && !countdownNumber && (
                     <div className="buffering-container">
-                        <div className="buffering-text">✓ Song downloaded and ready!</div>
+                        <div className="buffering-text">✓ Song downloaded!</div>
                         <div className="buffering-status">
-                            Waiting for {totalDevices - completeCount} more device{totalDevices - completeCount !== 1 ? 's' : ''} to finish...
+                            Verifying playback readiness on all devices...
+                        </div>
+                        {debugInfo && <div className="debug-info">{debugInfo}</div>}
+                    </div>
+                )}
+                
+                {syncPhase === 'countdown' && countdownNumber === null && (
+                    <div className="buffering-container">
+                        <div className="buffering-text">✓ All devices ready!</div>
+                        <div className="buffering-status">
+                            Starting playback...
                         </div>
                     </div>
                 )}
@@ -441,24 +501,21 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         );
     }
 
-    // ============================================
     // MAIN ROOM VIEW
-    // ============================================
-    const allMembers = [{ id: 'host', name: hostName || 'Host', isHost: true }, ...roomMembers.map(m => ({ ...m, isHost: false }))];
+    const allMembers = [...roomMembers];
     const displayMessages = chatMessages.length > 0 ? chatMessages : (messages || []);
 
     return (
         <div className="room">
             <div className="room-header">
-                <div className="logo-section"><h1>🎵 VibeSync</h1><span className="room-badge">Room: {roomCode}</span></div>
+                <div className="logo-section"><h1>🎵 VibeSync</h1><span className="room-badge">Room: {roomCode}</span>{getDebugButton()}</div>
                 <div className="header-buttons">
                     <button onClick={startSync} disabled={isSynced} className={`sync-btn ${isSynced ? 'synced' : ''}`}>{isSynced ? '✅ Synced' : '🔗 Start Sync'}</button>
                     <button onClick={onLeave} className="leave-btn">🚪 Leave Room</button>
                 </div>
             </div>
-            <div className="sync-status-bar">📡 Status: {syncStatus} {isSynced ? '✅' : '⏳'}</div>
+            <div className="sync-status-bar">📡 Status: {syncStatus} {isSynced ? '✅' : '⏳'} {debugInfo && `| ${debugInfo}`}</div>
             <div className="three-columns">
-                {/* SEARCH COLUMN */}
                 <div className="column search-column">
                     <div className="column-header"><h3>🔍 Search Music</h3>{!isHost && <span className="host-only-badge">(Host only)</span>}</div>
                     <div className="source-tabs"><button className={`source-tab ${selectedSource === 'youtube' ? 'active' : ''}`} onClick={() => setSelectedSource('youtube')}>🎬 YouTube</button><button className="source-tab disabled" disabled>🎵 Spotify (Soon)</button></div>
@@ -472,13 +529,25 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     )}
                 </div>
                 
-                {/* MEMBERS COLUMN */}
                 <div className="column members-column">
-                    <div className="column-header"><h3>👥 Members</h3><span className="member-count">{allMembers.length}</span></div>
-                    <div className="members-list">{allMembers.map((member, idx) => (<div key={idx} className={`member-item ${member.isHost ? 'host' : ''}`}><span className="member-avatar">{member.isHost ? '👑' : '🎧'}</span><span className="member-name">{member.name}</span><span className="member-role">{member.isHost ? 'Host' : 'Listener'}</span>{member.isHost && isHost && <span className="you-tag">You</span>}</div>))}</div>
+                    <div className="column-header"><h3>👥 Members</h3><span className="member-count">{allMembers.length + 1}</span></div>
+                    <div className="members-list">
+                        <div className="member-item host">
+                            <span className="member-avatar">👑</span>
+                            <span className="member-name">{hostName || 'Host'}</span>
+                            <span className="member-role">Host</span>
+                            {isHost && <span className="you-tag">You</span>}
+                        </div>
+                        {allMembers.map((member, idx) => (
+                            <div key={idx} className="member-item">
+                                <span className="member-avatar">🎧</span>
+                                <span className="member-name">{member.name}</span>
+                                <span className="member-role">Listener</span>
+                            </div>
+                        ))}
+                    </div>
                 </div>
                 
-                {/* CHAT COLUMN */}
                 <div className="column chat-column">
                     <div className="column-header"><h3>💬 Group Chat</h3></div>
                     <div className="chat-messages">
@@ -504,8 +573,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     );
 }
 
-function AppContent() {
-    const [inRoom, setInRoom] = useState(false);
+function AppContent()
+{
+const [inRoom, setInRoom] = useState(false);
     const [roomCode, setRoomCode] = useState('');
     const [isHost, setIsHost] = useState(false);
     const handleEnterRoom = (code, host) => { setRoomCode(code); setIsHost(host); setInRoom(true); };
