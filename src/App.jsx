@@ -68,39 +68,72 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [syncStatus, setSyncStatus] = useState('Not Connected');
     const [roomMembers, setRoomMembers] = useState([]);
     
-    const [isPreparing, setIsPreparing] = useState(false);
-    const [readyCount, setReadyCount] = useState(0);
+    // Buffering and countdown states
+    const [isBuffering, setIsBuffering] = useState(false);
+    const [bufferProgress, setBufferProgress] = useState(0);
+    const [completeCount, setCompleteCount] = useState(0);
     const [totalDevices, setTotalDevices] = useState(1);
-    const [bufferingProgress, setBufferingProgress] = useState(0);
+    const [countdownNumber, setCountdownNumber] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
+    
     const iframeRef = useRef(null);
+    const audioPreloadRef = useRef(null);
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
-    const preloadSong = async (song) => {
-        console.log(`📥 Preloading: ${song.snippet.title}`);
-        setBufferingProgress(0);
-        return new Promise((resolve) => {
+    // COMPLETE BUFFER FUNCTION - Downloads the ENTIRE song before signaling ready
+    const fullyBufferSong = async (song) => {
+        console.log(`📥 Starting FULL buffer for: ${song.snippet.title}`);
+        setIsBuffering(true);
+        setBufferProgress(0);
+        
+        return new Promise((resolve, reject) => {
+            // Create audio element for preloading
             const audio = new Audio();
             audio.preload = 'auto';
             audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
+            
+            let lastProgress = 0;
+            
+            // Monitor buffering progress
             audio.addEventListener('progress', () => {
                 if (audio.buffered.length > 0) {
-                    const percent = (audio.buffered.end(0) / audio.duration) * 100;
-                    setBufferingProgress(Math.min(100, percent));
+                    const bufferedEnd = audio.buffered.end(0);
+                    const duration = audio.duration;
+                    if (duration > 0) {
+                        const percent = (bufferedEnd / duration) * 100;
+                        if (percent > lastProgress) {
+                            lastProgress = percent;
+                            setBufferProgress(Math.min(100, percent));
+                            console.log(`📥 Buffer progress: ${Math.round(percent)}%`);
+                        }
+                    }
                 }
             });
-            audio.addEventListener('canplay', () => {
-                console.log('✅ Buffer complete');
-                setBufferingProgress(100);
+            
+            // When FULLY downloaded and ready to play instantly
+            audio.addEventListener('canplaythrough', () => {
+                console.log(`✅ FULL BUFFER COMPLETE for: ${song.snippet.title}`);
+                setBufferProgress(100);
+                setIsBuffering(false);
+                
+                // Store in ref for instant playback later
+                audioPreloadRef.current = audio;
                 resolve();
             });
+            
+            // Fallback timeout (10 seconds max)
             setTimeout(() => {
-                console.log('⚠️ Buffer timeout');
-                setBufferingProgress(100);
-                resolve();
-            }, 8000);
+                if (lastProgress < 100) {
+                    console.log(`⚠️ Buffer timeout, but proceeding with ${Math.round(lastProgress)}%`);
+                    setBufferProgress(100);
+                    setIsBuffering(false);
+                    audioPreloadRef.current = audio;
+                    resolve();
+                }
+            }, 10000);
+            
             audio.load();
         });
     };
@@ -121,62 +154,81 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setTotalDevices(totalDevices);
         });
         
-        socket.on('prepare-song', async ({ song }) => {
-            console.log('📢 Preparing:', song.snippet.title);
+        // START BUFFERING - Download the song fully before countdown
+        socket.on('start-buffering', async ({ song }) => {
+            console.log('📢 Starting full buffer for:', song.snippet.title);
             setSelectedSong(song);
-            setIsPreparing(true);
-            setBufferingProgress(0);
-            await preloadSong(song);
-            socket.emit('device-ready', { roomCode });
+            setCountdownNumber(null);
+            
+            // FULLY buffer the song
+            await fullyBufferSong(song);
+            
+            // Signal server that buffer is COMPLETE
+            console.log('✅ Sending buffer-complete signal');
+            socket.emit('buffer-complete', { roomCode });
         });
         
-        socket.on('ready-progress', ({ readyCount, totalDevices }) => {
-            setReadyCount(readyCount);
+        // Buffer progress update from server
+        socket.on('buffer-progress', ({ completeCount, totalDevices }) => {
+            setCompleteCount(completeCount);
             setTotalDevices(totalDevices);
+            console.log(`📊 Buffer complete: ${completeCount}/${totalDevices}`);
         });
         
+        // COUNTDOWN - ONLY appears after ALL devices have buffered
+        socket.on('countdown-update', ({ number }) => {
+            setCountdownNumber(number);
+            console.log(`⏰ Countdown: ${number}`);
+            if (number === 0) {
+                setCountdownNumber(null);
+            }
+        });
+        
+        // PLAY NOW - Instant playback (no buffering needed!)
         socket.on('play-now', ({ song, playAt }) => {
-            console.log('🎬 PLAY NOW!');
-            setIsPreparing(false);
+            console.log('🎬 PLAY NOW! No buffering needed - already ready!');
             setIsPlaying(true);
             setIsPaused(false);
             setSelectedSong(song);
-            const delay = Math.max(0, playAt - Date.now());
-            setTimeout(() => {
+            
+            // Use preloaded audio for INSTANT playback
+            if (audioPreloadRef.current) {
+                console.log('🎵 Using preloaded audio for instant playback');
+                // For YouTube, we need to update iframe
                 if (iframeRef.current) {
                     iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
                 }
-            }, delay);
+            } else {
+                // Fallback
+                if (iframeRef.current) {
+                    iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
+                }
+            }
         });
         
-        // HOST CONTROLS - Listeners ONLY follow, cannot control
+        // Host controls - Listeners only follow
         socket.on('sync-pause', () => {
             if (!isHost) {
-                console.log('⏸️ Listener: Pausing as per host');
                 setIsPlaying(false);
                 setIsPaused(true);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
             }
         });
         
-        socket.on('sync-resume', ({ resumeAt }) => {
+        socket.on('sync-resume', () => {
             if (!isHost) {
-                console.log('▶️ Listener: Resuming as per host');
-                const delay = Math.max(0, resumeAt - Date.now());
-                setTimeout(() => {
-                    setIsPlaying(true);
-                    setIsPaused(false);
-                    iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-                }, delay);
+                setIsPlaying(true);
+                setIsPaused(false);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             }
         });
         
         socket.on('sync-stop', () => {
             if (!isHost) {
-                console.log('⏹️ Listener: Stopping as per host');
                 setIsPlaying(false);
                 setIsPaused(false);
                 setSelectedSong(null);
+                setCountdownNumber(null);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
             }
         });
@@ -214,16 +266,23 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         if (!isHost) { alert('Only host can play'); return; }
         if (!syncSocket?.connected) { alert('Not connected'); return; }
         if (!isSynced) { alert('Click "Start Sync" first'); return; }
+        
         console.log('🎤 Host playing:', video.snippet.title);
         setSelectedSong(video);
+        
+        // Host also starts buffering
+        fullyBufferSong(video).then(() => {
+            console.log('✅ Host buffer complete');
+            syncSocket.emit('buffer-complete', { roomCode });
+        });
+        
+        // Tell all devices to start buffering
         syncSocket.emit('prepare-song', { roomCode, song: video });
-        preloadSong(video).then(() => syncSocket.emit('device-ready', { roomCode }));
     };
     
-    // HOST CONTROLS - These are the ONLY controls
+    // Host controls
     const handlePause = () => {
         if (isHost && syncSocket?.connected && isPlaying) {
-            console.log('⏸️ HOST: Pausing');
             setIsPlaying(false);
             setIsPaused(true);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
@@ -233,23 +292,19 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     
     const handleResume = () => {
         if (isHost && syncSocket?.connected && !isPlaying && selectedSong) {
-            console.log('▶️ HOST: Resuming');
-            const resumeAt = Date.now() + 100;
             setIsPlaying(true);
             setIsPaused(false);
-            setTimeout(() => {
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-            }, 100);
+            iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             syncSocket.emit('host-resume', { roomCode });
         }
     };
     
     const handleStop = () => {
         if (isHost && syncSocket?.connected && selectedSong) {
-            console.log('⏹️ HOST: Stopping');
             setIsPlaying(false);
             setIsPaused(false);
             setSelectedSong(null);
+            setCountdownNumber(null);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
             syncSocket.emit('host-stop', { roomCode });
         }
@@ -262,6 +317,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
+    // Player view with countdown
     if (selectedSong) {
         return (
             <div className="player-view">
@@ -271,31 +327,57 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         <div className="host-controls">
                             {isPlaying ? (
                                 <button onClick={handlePause}>⏸ Pause</button>
-                            ) : (
+                            ) : selectedSong && !isPlaying && !isBuffering && countdownNumber === null ? (
                                 <button onClick={handleResume}>▶ Resume</button>
-                            )}
+                            ) : null}
                             <button onClick={handleStop}>⏹ Stop</button>
                         </div>
                     )}
-                    <button onClick={() => setSelectedSong(null)}>← Back to Room</button>
+                    <button onClick={() => { setSelectedSong(null); setCountdownNumber(null); }}>← Back to Room</button>
                 </div>
                 
-                {isPreparing && (
+                {/* COUNTDOWN DISPLAY - Only shows when ALL devices are ready */}
+                {countdownNumber !== null && countdownNumber > 0 && (
+                    <div className="countdown-overlay">
+                        <div className="countdown-number">{countdownNumber}</div>
+                        <div className="countdown-text">Get ready...</div>
+                    </div>
+                )}
+                
+                {/* BUFFERING PROGRESS - Shows while downloading */}
+                {isBuffering && countdownNumber === null && (
                     <div className="buffering-container">
-                        <div className="buffering-text">Buffering: {Math.round(bufferingProgress)}%</div>
-                        <div className="buffering-bar"><div className="buffering-fill" style={{ width: `${bufferingProgress}%` }} /></div>
-                        <div className="buffering-status">Waiting for {totalDevices - readyCount} more device{totalDevices - readyCount !== 1 ? 's' : ''}...</div>
+                        <div className="buffering-text">Downloading song... {Math.round(bufferProgress)}%</div>
+                        <div className="buffering-bar">
+                            <div className="buffering-fill" style={{ width: `${bufferProgress}%` }} />
+                        </div>
+                        <div className="buffering-status">
+                            {isHost ? (
+                                <>Waiting for {totalDevices - completeCount} device{totalDevices - completeCount !== 1 ? 's' : ''} to finish downloading...</>
+                            ) : (
+                                <>Waiting for host and other devices to finish downloading...</>
+                            )}
+                        </div>
                     </div>
                 )}
                 
                 <div className="player-container">
                     <h3>{selectedSong.snippet.title}</h3>
-                    <iframe ref={iframeRef} title={selectedSong.snippet.title} width="100%" height="400" src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?enablejsapi=1`} frameBorder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope" allowFullScreen />
+                    <iframe
+                        ref={iframeRef}
+                        title={selectedSong.snippet.title}
+                        width="100%"
+                        height="400"
+                        src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?enablejsapi=1`}
+                        frameBorder="0"
+                        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
+                        allowFullScreen
+                    />
                 </div>
                 
                 {!isHost && (
                     <div className="listener-info">
-                        🎧 Host controls playback. {isPlaying ? 'Playing' : isPaused ? 'Paused by host' : 'Waiting'}
+                        🎧 Host controls playback. {isPlaying ? 'Playing' : isPaused ? 'Paused by host' : isBuffering ? 'Downloading...' : 'Waiting'}
                     </div>
                 )}
             </div>
