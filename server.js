@@ -29,9 +29,9 @@ io.on('connection', (socket) => {
             readyCount: 0,
             totalDevices: 1,
             hostReady: false,
-            countdownActive: false,
+            syncPhase: 'idle', // idle, preloading, countdown, playing
             countdownInterval: null,
-            allPreloaded: false
+            messages: []
         });
         socket.emit('room-created', { roomCode });
         console.log(`📢 Room ${roomCode} created by ${hostName}`);
@@ -43,6 +43,9 @@ io.on('connection', (socket) => {
             socket.join(roomCode);
             room.listeners.set(socket.id, { name: listenerName, preloadComplete: false });
             room.totalDevices = room.listeners.size + 1;
+            
+            // Send existing chat messages to new listener
+            socket.emit('chat-history', { messages: room.messages || [] });
             
             io.to(room.hostId).emit('listener-joined', { 
                 name: listenerName, 
@@ -56,15 +59,31 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Chat message
+    socket.on('chat-message', ({ roomCode, text, sender }) => {
+        const room = rooms.get(roomCode);
+        if (room) {
+            const message = {
+                id: Date.now(),
+                text: text,
+                sender: sender,
+                timestamp: new Date().toISOString()
+            };
+            room.messages = room.messages || [];
+            room.messages.push(message);
+            io.to(roomCode).emit('new-chat-message', message);
+            console.log(`💬 ${sender}: ${text}`);
+        }
+    });
+
     // Host prepares a song - ALL devices start preloading
     socket.on('prepare-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
+        if (room && room.hostId === socket.id && room.syncPhase === 'idle') {
             room.currentSong = song;
             room.readyCount = 0;
             room.hostReady = false;
-            room.countdownActive = false;
-            room.allPreloaded = false;
+            room.syncPhase = 'preloading';
             
             // Reset all listener preload states
             for (let [id, listener] of room.listeners) {
@@ -74,15 +93,15 @@ io.on('connection', (socket) => {
             console.log(`📢 Host preparing: ${song.snippet.title}`);
             console.log(`📢 Broadcasting to ${room.listeners.size + 1} devices to PRELOAD`);
             
-            // Tell EVERYONE to preload (NOT visible yet)
+            // Tell EVERYONE to preload
             io.to(roomCode).emit('preload-song', { song });
         }
     });
 
-    // Device reports preload is COMPLETE (iframe hidden and loaded)
+    // Device reports preload is COMPLETE (100% ready for instant playback)
     socket.on('preload-complete', ({ roomCode }) => {
         const room = rooms.get(roomCode);
-        if (room) {
+        if (room && room.syncPhase === 'preloading') {
             if (socket.id === room.hostId) {
                 room.hostReady = true;
                 console.log(`✅ Host preload COMPLETE`);
@@ -99,25 +118,24 @@ io.on('connection', (socket) => {
             for (let [id, listener] of room.listeners) {
                 if (listener.preloadComplete) completeCount++;
             }
+            room.readyCount = completeCount;
             
-            console.log(`📊 Preload complete: ${completeCount}/${room.totalDevices}`);
+            console.log(`📊 Preload complete: ${room.readyCount}/${room.totalDevices}`);
             
-            // Update host with progress
-            io.to(room.hostId).emit('preload-progress', {
-                completeCount: completeCount,
+            // Update all devices with progress
+            io.to(roomCode).emit('preload-progress', {
+                completeCount: room.readyCount,
                 totalDevices: room.totalDevices
             });
             
             // ONLY when ALL devices have preloaded, start countdown
-            if (completeCount >= room.totalDevices && !room.countdownActive) {
+            if (room.readyCount >= room.totalDevices && room.syncPhase === 'preloading') {
                 console.log(`🎯 ALL ${room.totalDevices} DEVICES PRELOADED! Starting countdown...`);
-                room.countdownActive = true;
-                room.allPreloaded = true;
+                room.syncPhase = 'countdown';
                 
-                // Send countdown to ALL devices simultaneously
                 let countdown = 5;
                 
-                // Send initial countdown value
+                // Send countdown to ALL devices
                 io.to(roomCode).emit('countdown-start', { number: countdown });
                 
                 // Start countdown interval
@@ -129,17 +147,15 @@ io.on('connection', (socket) => {
                     
                     if (countdown < 0) {
                         clearInterval(interval);
-                        // PLAYBACK STARTS INSTANTLY - Player already preloaded and hidden
-                        const playAt = Date.now();
+                        // PLAYBACK STARTS INSTANTLY - NO BUFFERING NEEDED!
+                        room.syncPhase = 'playing';
                         room.isPlaying = true;
                         room.currentTime = 0;
                         io.to(roomCode).emit('play-now', { 
                             song: room.currentSong,
-                            playAt: playAt,
                             startTime: 0
                         });
-                        room.countdownActive = false;
-                        console.log(`▶️ Playback started at ${playAt} - ALL devices preloaded!`);
+                        console.log(`▶️ Playback started - ALL devices preloaded!`);
                     }
                 }, 1000);
                 
@@ -148,22 +164,22 @@ io.on('connection', (socket) => {
         }
     });
 
-    // Host controls
+    // Host controls - Only host can send these
     socket.on('host-pause', ({ roomCode }) => {
         const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id && room.isPlaying) {
+        if (room && room.hostId === socket.id && room.syncPhase === 'playing' && room.isPlaying) {
             room.isPlaying = false;
             io.to(roomCode).emit('sync-pause');
-            console.log(`⏸️ Host PAUSED`);
+            console.log(`⏸️ Host PAUSED in ${roomCode}`);
         }
     });
 
     socket.on('host-resume', ({ roomCode }) => {
         const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id && !room.isPlaying && room.currentSong) {
+        if (room && room.hostId === socket.id && room.syncPhase === 'playing' && !room.isPlaying) {
             room.isPlaying = true;
             io.to(roomCode).emit('sync-resume');
-            console.log(`▶️ Host RESUMED`);
+            console.log(`▶️ Host RESUMED in ${roomCode}`);
         }
     });
 
@@ -171,12 +187,11 @@ io.on('connection', (socket) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.isPlaying = false;
+            room.syncPhase = 'idle';
             room.currentSong = null;
-            room.countdownActive = false;
-            room.allPreloaded = false;
             if (room.countdownInterval) clearInterval(room.countdownInterval);
             io.to(roomCode).emit('sync-stop');
-            console.log(`⏹️ Host STOPPED`);
+            console.log(`⏹️ Host STOPPED in ${roomCode}`);
         }
     });
 
