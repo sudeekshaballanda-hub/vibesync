@@ -767,3 +767,14 @@ body {
     color: #B0B0B0;
     font-size: 14px;
 }
+
+.warning-message {
+    text-align: center;
+    padding: 12px 20px;
+    margin: 15px;
+    background: #ff9800;
+    color: #1a1a1a;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: bold;
+}

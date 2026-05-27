@@ -68,30 +68,27 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [syncStatus, setSyncStatus] = useState('Not Connected');
     const [roomMembers, setRoomMembers] = useState([]);
     
-    // Preload and countdown states
-    const [isPreloading, setIsPreloading] = useState(false);
+    // Sync phase states
+    const [syncPhase, setSyncPhase] = useState('idle'); // idle, preloading, countdown, playing
     const [preloadProgress, setPreloadProgress] = useState(0);
     const [completeCount, setCompleteCount] = useState(0);
     const [totalDevices, setTotalDevices] = useState(1);
     const [countdownNumber, setCountdownNumber] = useState(null);
-    const [showPlayer, setShowPlayer] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
-    const [isPaused, setIsPaused] = useState(false);
     
     const iframeRef = useRef(null);
     const hiddenIframeRef = useRef(null);
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
-    // PRELOAD FUNCTION - Loads video in HIDDEN iframe (visible: false)
+    // PRELOAD FUNCTION - Hidden iframe (host also follows this)
     const preloadSongHidden = async (song) => {
         console.log(`📥 PRELOADING (hidden): ${song.snippet.title}`);
-        setIsPreloading(true);
         setPreloadProgress(0);
-        setShowPlayer(false);
+        setSyncPhase('preloading');
         
         return new Promise((resolve) => {
-            // Create hidden iframe for preloading (opacity 0, position absolute)
+            // Create hidden iframe for preloading
             const hiddenIframe = document.createElement('iframe');
             hiddenIframe.style.position = 'absolute';
             hiddenIframe.style.top = '-9999px';
@@ -131,7 +128,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 console.log(`⚠️ Preload timeout, proceeding`);
                 setPreloadProgress(100);
                 resolve();
-            }, 8000);
+            }, 10000);
             
             audio.load();
         });
@@ -153,11 +150,11 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setTotalDevices(totalDevices);
         });
         
-        // START PRELOAD - Load song in HIDDEN iframe
+        // START PRELOAD - All devices (including host) start preloading
         socket.on('preload-song', async ({ song }) => {
             console.log('📢 Starting hidden preload for:', song.snippet.title);
             setSelectedSong(song);
-            setShowPlayer(false);
+            setSyncPhase('preloading');
             setCountdownNumber(null);
             
             await preloadSongHidden(song);
@@ -172,9 +169,10 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setTotalDevices(totalDevices);
         });
         
-        // COUNTDOWN starts
+        // COUNTDOWN starts - ALL devices show countdown
         socket.on('countdown-start', ({ number }) => {
             console.log(`⏰ Countdown started: ${number}`);
+            setSyncPhase('countdown');
             setCountdownNumber(number);
         });
         
@@ -188,11 +186,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         // PLAY NOW - Show the player and start playback immediately
         socket.on('play-now', ({ song }) => {
             console.log('🎬 PLAY NOW! Showing preloaded player');
+            setSyncPhase('playing');
             setIsPlaying(true);
-            setIsPaused(false);
             setSelectedSong(song);
-            setShowPlayer(true);
-            setIsPreloading(false);
             
             // Update the visible iframe with preloaded content
             if (iframeRef.current) {
@@ -206,19 +202,17 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }
         });
         
-        // Host controls
+        // Host controls - ONLY after sync phase is playing
         socket.on('sync-pause', () => {
-            if (!isHost) {
+            if (!isHost && syncPhase === 'playing') {
                 setIsPlaying(false);
-                setIsPaused(true);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
             }
         });
         
         socket.on('sync-resume', () => {
-            if (!isHost) {
+            if (!isHost && syncPhase === 'playing') {
                 setIsPlaying(true);
-                setIsPaused(false);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             }
         });
@@ -226,9 +220,8 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         socket.on('sync-stop', () => {
             if (!isHost) {
                 setIsPlaying(false);
-                setIsPaused(false);
+                setSyncPhase('idle');
                 setSelectedSong(null);
-                setShowPlayer(false);
                 setCountdownNumber(null);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
             }
@@ -263,16 +256,17 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         setSearchLoading(false);
     };
 
+    // HOST play song - NO MANUAL PLAY ALLOWED, follows same barrier as listeners
     const playSong = (video) => {
         if (!isHost) { alert('Only host can play'); return; }
         if (!syncSocket?.connected) { alert('Not connected'); return; }
         if (!isSynced) { alert('Click "Start Sync" first'); return; }
+        if (syncPhase !== 'idle') { alert('A song is already being prepared'); return; }
         
-        console.log('🎤 Host playing:', video.snippet.title);
+        console.log('🎤 Host selecting song:', video.snippet.title);
         setSelectedSong(video);
-        setShowPlayer(false);
         
-        // Host also preloads hidden
+        // Host also preloads hidden (follows same barrier)
         preloadSongHidden(video).then(() => {
             console.log('✅ Host preload complete');
             syncSocket.emit('preload-complete', { roomCode });
@@ -281,35 +275,32 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         syncSocket.emit('prepare-song', { roomCode, song: video });
     };
     
+    // Host controls - ONLY available during playing phase
     const handlePause = () => {
-        if (isHost && syncSocket?.connected && isPlaying) {
+        if (isHost && syncPhase === 'playing' && syncSocket?.connected && isPlaying) {
             setIsPlaying(false);
-            setIsPaused(true);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
             syncSocket.emit('host-pause', { roomCode });
         }
     };
     
     const handleResume = () => {
-        if (isHost && syncSocket?.connected && !isPlaying && selectedSong) {
+        if (isHost && syncPhase === 'playing' && syncSocket?.connected && !isPlaying && selectedSong) {
             setIsPlaying(true);
-            setIsPaused(false);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             syncSocket.emit('host-resume', { roomCode });
         }
     };
     
     const handleStop = () => {
-        if (isHost && syncSocket?.connected && selectedSong) {
+        if (isHost && syncPhase !== 'idle' && syncSocket?.connected) {
             setIsPlaying(false);
-            setIsPaused(false);
+            setSyncPhase('idle');
             setSelectedSong(null);
-            setShowPlayer(false);
             setCountdownNumber(null);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
             syncSocket.emit('host-stop', { roomCode });
             
-            // Clean up hidden iframe
             if (hiddenIframeRef.current) {
                 hiddenIframeRef.current.remove();
                 hiddenIframeRef.current = null;
@@ -324,8 +315,10 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
-    // Player view - Only shows when preloading is done and countdown finished
-    if (showPlayer && selectedSong) {
+    // ============================================
+    // PLAYER VIEW - Only during playing phase
+    // ============================================
+    if (syncPhase === 'playing' && selectedSong) {
         return (
             <div className="player-view">
                 <div className="player-header">
@@ -334,13 +327,13 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         <div className="host-controls">
                             {isPlaying ? (
                                 <button onClick={handlePause}>⏸ Pause</button>
-                            ) : selectedSong && !isPlaying && !isPreloading ? (
+                            ) : (
                                 <button onClick={handleResume}>▶ Resume</button>
-                            ) : null}
+                            )}
                             <button onClick={handleStop}>⏹ Stop</button>
                         </div>
                     )}
-                    <button onClick={() => { setSelectedSong(null); setShowPlayer(false); }}>← Back to Room</button>
+                    <button onClick={handleStop}>← Back to Room</button>
                 </div>
                 
                 <div className="player-container">
@@ -359,24 +352,26 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 
                 {!isHost && (
                     <div className="listener-info">
-                        🎧 Host controls playback. {isPlaying ? 'Playing' : isPaused ? 'Paused by host' : 'Waiting'}
+                        🎧 Host controls playback. {isPlaying ? 'Playing' : 'Paused by host'}
                     </div>
                 )}
             </div>
         );
     }
     
-    // Preloading / Countdown View
-    if (selectedSong && !showPlayer) {
+    // ============================================
+    // PRELOADING / COUNTDOWN VIEW
+    // ============================================
+    if (selectedSong && syncPhase !== 'playing') {
         return (
             <div className="player-view">
                 <div className="player-header">
-                    <h2>🎵 Preparing</h2>
+                    <h2>🎵 Preparing to Play</h2>
                     {isHost && <button onClick={handleStop}>⏹ Cancel</button>}
-                    <button onClick={() => { setSelectedSong(null); setShowPlayer(false); }}>← Back</button>
+                    <button onClick={handleStop}>← Back</button>
                 </div>
                 
-                {/* COUNTDOWN DISPLAY */}
+                {/* COUNTDOWN DISPLAY - Shows on ALL devices simultaneously */}
                 {countdownNumber !== null && countdownNumber > 0 && (
                     <div className="countdown-overlay">
                         <div className="countdown-number">{countdownNumber}</div>
@@ -385,18 +380,24 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 )}
                 
                 {/* PRELOADING PROGRESS */}
-                {!countdownNumber && (
+                {syncPhase === 'preloading' && !countdownNumber && (
                     <div className="buffering-container">
-                        <div className="buffering-text">Preloading song... {Math.round(preloadProgress)}%</div>
+                        <div className="buffering-text">Downloading song... {Math.round(preloadProgress)}%</div>
                         <div className="buffering-bar">
                             <div className="buffering-fill" style={{ width: `${preloadProgress}%` }} />
                         </div>
                         <div className="buffering-status">
-                            {isHost ? (
-                                <>Waiting for {totalDevices - completeCount} device{totalDevices - completeCount !== 1 ? 's' : ''} to finish preloading...</>
-                            ) : (
-                                <>Waiting for all devices to preload...</>
-                            )}
+                            Waiting for {totalDevices - completeCount} device{totalDevices - completeCount !== 1 ? 's' : ''} to finish downloading...
+                        </div>
+                    </div>
+                )}
+                
+                {/* WAITING FOR COUNTDOWN */}
+                {syncPhase === 'preloading' && preloadProgress === 100 && !countdownNumber && (
+                    <div className="buffering-container">
+                        <div className="buffering-text">✓ Song downloaded!</div>
+                        <div className="buffering-status">
+                            Waiting for all devices to be ready...
                         </div>
                     </div>
                 )}
@@ -404,13 +405,23 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 <div className="player-container">
                     <h3>{selectedSong.snippet.title}</h3>
                     <p style={{ textAlign: 'center', color: '#B0B0B0' }}>
-                        {countdownNumber ? 'Starting soon...' : 'Preloading complete. Waiting for all devices...'}
+                        {countdownNumber ? 'Starting in...' : 'Preparing synchronized playback...'}
                     </p>
                 </div>
+                
+                {/* IMPORTANT: HIDE MANUAL PLAY CONTROLS DURING PRELOAD/COUNTDOWN */}
+                {isHost && (
+                    <div className="warning-message">
+                        ⚠️ Manual play is disabled during synchronization. Playback will start automatically when all devices are ready.
+                    </div>
+                )}
             </div>
         );
     }
 
+    // ============================================
+    // MAIN ROOM VIEW
+    // ============================================
     const allMembers = [{ id: 'host', name: hostName || 'Host', isHost: true }, ...roomMembers.map(m => ({ ...m, isHost: false }))];
 
     return (
