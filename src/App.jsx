@@ -68,71 +68,70 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [syncStatus, setSyncStatus] = useState('Not Connected');
     const [roomMembers, setRoomMembers] = useState([]);
     
-    // Buffering and countdown states
-    const [isBuffering, setIsBuffering] = useState(false);
-    const [bufferProgress, setBufferProgress] = useState(0);
+    // Preload and countdown states
+    const [isPreloading, setIsPreloading] = useState(false);
+    const [preloadProgress, setPreloadProgress] = useState(0);
     const [completeCount, setCompleteCount] = useState(0);
     const [totalDevices, setTotalDevices] = useState(1);
     const [countdownNumber, setCountdownNumber] = useState(null);
+    const [showPlayer, setShowPlayer] = useState(false);
     const [isPlaying, setIsPlaying] = useState(false);
     const [isPaused, setIsPaused] = useState(false);
     
     const iframeRef = useRef(null);
-    const audioPreloadRef = useRef(null);
+    const hiddenIframeRef = useRef(null);
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
-    // COMPLETE BUFFER FUNCTION - Downloads the ENTIRE song before signaling ready
-    const fullyBufferSong = async (song) => {
-        console.log(`📥 Starting FULL buffer for: ${song.snippet.title}`);
-        setIsBuffering(true);
-        setBufferProgress(0);
+    // PRELOAD FUNCTION - Loads video in HIDDEN iframe (visible: false)
+    const preloadSongHidden = async (song) => {
+        console.log(`📥 PRELOADING (hidden): ${song.snippet.title}`);
+        setIsPreloading(true);
+        setPreloadProgress(0);
+        setShowPlayer(false);
         
-        return new Promise((resolve, reject) => {
-            // Create audio element for preloading
+        return new Promise((resolve) => {
+            // Create hidden iframe for preloading (opacity 0, position absolute)
+            const hiddenIframe = document.createElement('iframe');
+            hiddenIframe.style.position = 'absolute';
+            hiddenIframe.style.top = '-9999px';
+            hiddenIframe.style.left = '-9999px';
+            hiddenIframe.style.width = '1px';
+            hiddenIframe.style.height = '1px';
+            hiddenIframe.style.opacity = '0';
+            hiddenIframe.style.pointerEvents = 'none';
+            hiddenIframe.src = `https://www.youtube.com/embed/${song.id.videoId}?enablejsapi=1`;
+            document.body.appendChild(hiddenIframe);
+            hiddenIframeRef.current = hiddenIframe;
+            
+            // Also preload audio element
             const audio = new Audio();
             audio.preload = 'auto';
             audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
             
-            let lastProgress = 0;
-            
-            // Monitor buffering progress
+            let progress = 0;
             audio.addEventListener('progress', () => {
                 if (audio.buffered.length > 0) {
-                    const bufferedEnd = audio.buffered.end(0);
+                    const buffered = audio.buffered.end(0);
                     const duration = audio.duration;
                     if (duration > 0) {
-                        const percent = (bufferedEnd / duration) * 100;
-                        if (percent > lastProgress) {
-                            lastProgress = percent;
-                            setBufferProgress(Math.min(100, percent));
-                            console.log(`📥 Buffer progress: ${Math.round(percent)}%`);
-                        }
+                        progress = (buffered / duration) * 100;
+                        setPreloadProgress(Math.min(100, progress));
                     }
                 }
             });
             
-            // When FULLY downloaded and ready to play instantly
             audio.addEventListener('canplaythrough', () => {
-                console.log(`✅ FULL BUFFER COMPLETE for: ${song.snippet.title}`);
-                setBufferProgress(100);
-                setIsBuffering(false);
-                
-                // Store in ref for instant playback later
-                audioPreloadRef.current = audio;
+                console.log(`✅ HIDDEN PRELOAD COMPLETE: ${song.snippet.title}`);
+                setPreloadProgress(100);
                 resolve();
             });
             
-            // Fallback timeout (10 seconds max)
             setTimeout(() => {
-                if (lastProgress < 100) {
-                    console.log(`⚠️ Buffer timeout, but proceeding with ${Math.round(lastProgress)}%`);
-                    setBufferProgress(100);
-                    setIsBuffering(false);
-                    audioPreloadRef.current = audio;
-                    resolve();
-                }
-            }, 10000);
+                console.log(`⚠️ Preload timeout, proceeding`);
+                setPreloadProgress(100);
+                resolve();
+            }, 8000);
             
             audio.load();
         });
@@ -154,59 +153,60 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setTotalDevices(totalDevices);
         });
         
-        // START BUFFERING - Download the song fully before countdown
-        socket.on('start-buffering', async ({ song }) => {
-            console.log('📢 Starting full buffer for:', song.snippet.title);
+        // START PRELOAD - Load song in HIDDEN iframe
+        socket.on('preload-song', async ({ song }) => {
+            console.log('📢 Starting hidden preload for:', song.snippet.title);
             setSelectedSong(song);
+            setShowPlayer(false);
             setCountdownNumber(null);
             
-            // FULLY buffer the song
-            await fullyBufferSong(song);
+            await preloadSongHidden(song);
             
-            // Signal server that buffer is COMPLETE
-            console.log('✅ Sending buffer-complete signal');
-            socket.emit('buffer-complete', { roomCode });
+            console.log('✅ Sending preload-complete signal');
+            socket.emit('preload-complete', { roomCode });
         });
         
-        // Buffer progress update from server
-        socket.on('buffer-progress', ({ completeCount, totalDevices }) => {
+        // Preload progress update
+        socket.on('preload-progress', ({ completeCount, totalDevices }) => {
             setCompleteCount(completeCount);
             setTotalDevices(totalDevices);
-            console.log(`📊 Buffer complete: ${completeCount}/${totalDevices}`);
         });
         
-        // COUNTDOWN - ONLY appears after ALL devices have buffered
-        socket.on('countdown-update', ({ number }) => {
+        // COUNTDOWN starts
+        socket.on('countdown-start', ({ number }) => {
+            console.log(`⏰ Countdown started: ${number}`);
             setCountdownNumber(number);
-            console.log(`⏰ Countdown: ${number}`);
+        });
+        
+        socket.on('countdown-tick', ({ number }) => {
+            setCountdownNumber(number);
             if (number === 0) {
                 setCountdownNumber(null);
             }
         });
         
-        // PLAY NOW - Instant playback (no buffering needed!)
-        socket.on('play-now', ({ song, playAt }) => {
-            console.log('🎬 PLAY NOW! No buffering needed - already ready!');
+        // PLAY NOW - Show the player and start playback immediately
+        socket.on('play-now', ({ song }) => {
+            console.log('🎬 PLAY NOW! Showing preloaded player');
             setIsPlaying(true);
             setIsPaused(false);
             setSelectedSong(song);
+            setShowPlayer(true);
+            setIsPreloading(false);
             
-            // Use preloaded audio for INSTANT playback
-            if (audioPreloadRef.current) {
-                console.log('🎵 Using preloaded audio for instant playback');
-                // For YouTube, we need to update iframe
-                if (iframeRef.current) {
-                    iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
-                }
-            } else {
-                // Fallback
-                if (iframeRef.current) {
-                    iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
-                }
+            // Update the visible iframe with preloaded content
+            if (iframeRef.current) {
+                iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
+            }
+            
+            // Clean up hidden iframe
+            if (hiddenIframeRef.current) {
+                hiddenIframeRef.current.remove();
+                hiddenIframeRef.current = null;
             }
         });
         
-        // Host controls - Listeners only follow
+        // Host controls
         socket.on('sync-pause', () => {
             if (!isHost) {
                 setIsPlaying(false);
@@ -228,6 +228,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 setIsPlaying(false);
                 setIsPaused(false);
                 setSelectedSong(null);
+                setShowPlayer(false);
                 setCountdownNumber(null);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
             }
@@ -269,18 +270,17 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         
         console.log('🎤 Host playing:', video.snippet.title);
         setSelectedSong(video);
+        setShowPlayer(false);
         
-        // Host also starts buffering
-        fullyBufferSong(video).then(() => {
-            console.log('✅ Host buffer complete');
-            syncSocket.emit('buffer-complete', { roomCode });
+        // Host also preloads hidden
+        preloadSongHidden(video).then(() => {
+            console.log('✅ Host preload complete');
+            syncSocket.emit('preload-complete', { roomCode });
         });
         
-        // Tell all devices to start buffering
         syncSocket.emit('prepare-song', { roomCode, song: video });
     };
     
-    // Host controls
     const handlePause = () => {
         if (isHost && syncSocket?.connected && isPlaying) {
             setIsPlaying(false);
@@ -304,9 +304,16 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setIsPlaying(false);
             setIsPaused(false);
             setSelectedSong(null);
+            setShowPlayer(false);
             setCountdownNumber(null);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
             syncSocket.emit('host-stop', { roomCode });
+            
+            // Clean up hidden iframe
+            if (hiddenIframeRef.current) {
+                hiddenIframeRef.current.remove();
+                hiddenIframeRef.current = null;
+            }
         }
     };
 
@@ -317,8 +324,8 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
-    // Player view with countdown
-    if (selectedSong) {
+    // Player view - Only shows when preloading is done and countdown finished
+    if (showPlayer && selectedSong) {
         return (
             <div className="player-view">
                 <div className="player-header">
@@ -327,39 +334,14 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         <div className="host-controls">
                             {isPlaying ? (
                                 <button onClick={handlePause}>⏸ Pause</button>
-                            ) : selectedSong && !isPlaying && !isBuffering && countdownNumber === null ? (
+                            ) : selectedSong && !isPlaying && !isPreloading ? (
                                 <button onClick={handleResume}>▶ Resume</button>
                             ) : null}
                             <button onClick={handleStop}>⏹ Stop</button>
                         </div>
                     )}
-                    <button onClick={() => { setSelectedSong(null); setCountdownNumber(null); }}>← Back to Room</button>
+                    <button onClick={() => { setSelectedSong(null); setShowPlayer(false); }}>← Back to Room</button>
                 </div>
-                
-                {/* COUNTDOWN DISPLAY - Only shows when ALL devices are ready */}
-                {countdownNumber !== null && countdownNumber > 0 && (
-                    <div className="countdown-overlay">
-                        <div className="countdown-number">{countdownNumber}</div>
-                        <div className="countdown-text">Get ready...</div>
-                    </div>
-                )}
-                
-                {/* BUFFERING PROGRESS - Shows while downloading */}
-                {isBuffering && countdownNumber === null && (
-                    <div className="buffering-container">
-                        <div className="buffering-text">Downloading song... {Math.round(bufferProgress)}%</div>
-                        <div className="buffering-bar">
-                            <div className="buffering-fill" style={{ width: `${bufferProgress}%` }} />
-                        </div>
-                        <div className="buffering-status">
-                            {isHost ? (
-                                <>Waiting for {totalDevices - completeCount} device{totalDevices - completeCount !== 1 ? 's' : ''} to finish downloading...</>
-                            ) : (
-                                <>Waiting for host and other devices to finish downloading...</>
-                            )}
-                        </div>
-                    </div>
-                )}
                 
                 <div className="player-container">
                     <h3>{selectedSong.snippet.title}</h3>
@@ -368,7 +350,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         title={selectedSong.snippet.title}
                         width="100%"
                         height="400"
-                        src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?enablejsapi=1`}
+                        src={`https://www.youtube.com/embed/${selectedSong.id.videoId}?autoplay=1&enablejsapi=1`}
                         frameBorder="0"
                         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope"
                         allowFullScreen
@@ -377,9 +359,54 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 
                 {!isHost && (
                     <div className="listener-info">
-                        🎧 Host controls playback. {isPlaying ? 'Playing' : isPaused ? 'Paused by host' : isBuffering ? 'Downloading...' : 'Waiting'}
+                        🎧 Host controls playback. {isPlaying ? 'Playing' : isPaused ? 'Paused by host' : 'Waiting'}
                     </div>
                 )}
+            </div>
+        );
+    }
+    
+    // Preloading / Countdown View
+    if (selectedSong && !showPlayer) {
+        return (
+            <div className="player-view">
+                <div className="player-header">
+                    <h2>🎵 Preparing</h2>
+                    {isHost && <button onClick={handleStop}>⏹ Cancel</button>}
+                    <button onClick={() => { setSelectedSong(null); setShowPlayer(false); }}>← Back</button>
+                </div>
+                
+                {/* COUNTDOWN DISPLAY */}
+                {countdownNumber !== null && countdownNumber > 0 && (
+                    <div className="countdown-overlay">
+                        <div className="countdown-number">{countdownNumber}</div>
+                        <div className="countdown-text">Get ready...</div>
+                    </div>
+                )}
+                
+                {/* PRELOADING PROGRESS */}
+                {!countdownNumber && (
+                    <div className="buffering-container">
+                        <div className="buffering-text">Preloading song... {Math.round(preloadProgress)}%</div>
+                        <div className="buffering-bar">
+                            <div className="buffering-fill" style={{ width: `${preloadProgress}%` }} />
+                        </div>
+                        <div className="buffering-status">
+                            {isHost ? (
+                                <>Waiting for {totalDevices - completeCount} device{totalDevices - completeCount !== 1 ? 's' : ''} to finish preloading...</>
+                            ) : (
+                                <>Waiting for all devices to preload...</>
+                            )}
+                        </div>
+                    </div>
+                )}
+                
+                <div className="player-container">
+                    <h3>{selectedSong.snippet.title}</h3>
+                    <p style={{ textAlign: 'center', color: '#B0B0B0' }}>
+                        {countdownNumber ? 'Starting soon...' : 'Preloading complete. Waiting for all devices...'}
+                    </p>
+                </div>
             </div>
         );
     }
