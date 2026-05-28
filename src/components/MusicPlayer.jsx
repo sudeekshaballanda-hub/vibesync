@@ -1,64 +1,64 @@
 import React, { useState } from 'react';
 import YouTubeSearch from './YouTubeSearch';
+import SpotifyPlayer from './SpotifyPlayer';
 import { useRoom } from '../context/RoomContext';
+import { getAccessToken, loginToSpotify } from '../services/SpotifyAuth';
 
 export default function MusicPlayer() {
-    const { isHost, loadTrack } = useRoom();
+    const { isHost, loadTrack, syncSocket, roomCode } = useRoom();
     const [source, setSource] = useState(null);
+    const [isSpotifyConnected, setIsSpotifyConnected] = useState(!!getAccessToken());
 
     const handleTrackSelect = (track) => {
         if (isHost) {
-            console.log('Loading track:', track);
             loadTrack(track);
         }
     };
 
-    // Always show YouTube for demonstration
+    const handleSpotifyConnect = () => {
+        loginToSpotify();
+    };
+
     if (!source) {
         return (
-            <div className="music-source-selector" style={{ padding: '20px', textAlign: 'center' }}>
-                <h3 style={{ color: 'white', marginBottom: '20px' }}>Select Music Source</h3>
+            <div className="music-source-selector">
+                <h3>Select Music Source</h3>
                 <div className="source-buttons">
-                    <button
-                        className="source-btn youtube"
-                        onClick={() => setSource('youtube')}
-                        style={{
-                            background: '#FF0000',
-                            color: 'white',
-                            padding: '15px 30px',
-                            fontSize: '16px',
-                            border: 'none',
-                            borderRadius: '8px',
-                            cursor: 'pointer',
-                            margin: '10px'
-                        }}
-                    >
+                    <button className="source-btn youtube" onClick={() => setSource('youtube')}>
                         🎬 YouTube
                     </button>
+                    <button className="source-btn spotify" onClick={() => {
+                        if (!isSpotifyConnected) {
+                            handleSpotifyConnect();
+                        } else {
+                            setSource('spotify');
+                        }
+                    }}>
+                        🎵 Spotify
+                    </button>
                 </div>
+                {!isSpotifyConnected && (
+                    <p className="spotify-note">Click Spotify to connect your account (Premium required)</p>
+                )}
             </div>
         );
     }
 
     return (
-        <div className="music-player-container" style={{ padding: '20px' }}>
-            <button
-                className="back-to-source"
-                onClick={() => setSource(null)}
-                style={{
-                    background: '#333',
-                    border: 'none',
-                    padding: '8px 16px',
-                    borderRadius: '8px',
-                    color: 'white',
-                    cursor: 'pointer',
-                    marginBottom: '20px'
-                }}
-            >
+        <div className="music-player-container">
+            <button className="back-to-source" onClick={() => setSource(null)}>
                 ← Change Source
             </button>
             {source === 'youtube' && (
                 <YouTubeSearch onSelectTrack={handleTrackSelect} isHost={isHost} />
+            )}
+            {source === 'spotify' && (
+                <SpotifyPlayer 
+                    onTrackSelect={handleTrackSelect} 
+                    isHost={isHost}
+                    syncSocket={syncSocket}
+                    roomCode={roomCode}
+                />
             )}
         </div>
     );
