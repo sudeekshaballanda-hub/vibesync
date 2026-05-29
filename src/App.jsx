@@ -155,26 +155,21 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (number === 0) setCountdownNumber(null);
         });
         
-        // ============================================
-        // FIXED: AUTO-PLAY after countdown (NO MANUAL CLICK)
-        // ============================================
         socket.on('auto-play', ({ song, startTime }) => {
-            console.log(`[CLIENT] 🎬 AUTO-PLAY received at ${startTime}`);
+            console.log(`[CLIENT] 🎬 AUTO-PLAY received`);
             setSyncPhase('playing');
             setSelectedSong(song);
             setIsPlaying(true);
             
-            // Try to play, retry if iframe not ready
             const tryPlay = (attempt = 0) => {
                 if (iframeRef.current) {
                     const videoId = song.id.videoId;
                     iframeRef.current.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
-                    console.log(`[CLIENT] ✅ AUTO-PLAY triggered on attempt ${attempt}`);
+                    console.log(`[CLIENT] ✅ AUTO-PLAY triggered`);
                 } else if (attempt < 10) {
                     setTimeout(() => tryPlay(attempt + 1), 100);
                 }
             };
-            
             tryPlay();
             
             if (hiddenIframeRef.current) {
@@ -183,53 +178,39 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }
         });
         
-        socket.on('force-play', ({ playTime }) => {
+        // ============================================
+        // CRITICAL: FORCE PAUSE - MUST WORK
+        // ============================================
+        socket.on('force-pause', () => {
+            console.log(`[CLIENT] 📱 FORCE PAUSE received - isHost: ${isHost}, syncPhase: ${syncPhase}`);
             if (!isHost && syncPhase === 'playing') {
-                setIsPlaying(true);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+                setIsPlaying(false);
+                if (iframeRef.current) {
+                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+                    console.log(`[CLIENT] ✅ PAUSE command sent to iframe`);
+                }
             }
         });
         
-        socket.on('force-pause', () => {
-    if (!isHost && syncPhase === 'playing') {
-        console.log('[CLIENT] 📱 FORCE PAUSE received');
-        setIsPlaying(false);
-        
-        const tryPause = (attempt = 0) => {
-            if (iframeRef.current) {
-                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
-                console.log(`[CLIENT] ✅ PAUSE executed`);
-            } else if (attempt < 10) {
-                setTimeout(() => tryPause(attempt + 1), 100);
+        socket.on('force-resume', () => {
+            console.log(`[CLIENT] 📱 FORCE RESUME received - isHost: ${isHost}, syncPhase: ${syncPhase}`);
+            if (!isHost && syncPhase === 'playing') {
+                setIsPlaying(true);
+                if (iframeRef.current) {
+                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+                    console.log(`[CLIENT] ✅ RESUME command sent to iframe`);
+                }
             }
-        };
-        tryPause();
-    }
-});
-
-socket.on('force-resume', ({ resumeTime }) => {
-    if (!isHost && syncPhase === 'playing') {
-        console.log(`[CLIENT] 📱 FORCE RESUME received at ${resumeTime}`);
-        setIsPlaying(true);
-        
-        const tryResume = (attempt = 0) => {
-            if (iframeRef.current) {
-                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-                console.log(`[CLIENT] ✅ RESUME executed`);
-            } else if (attempt < 10) {
-                setTimeout(() => tryResume(attempt + 1), 100);
-            }
-        };
-        tryResume();
-    }
-});
+        });
         
         socket.on('force-stop', () => {
             if (!isHost) {
                 setIsPlaying(false);
                 setSyncPhase('idle');
                 setSelectedSong(null);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
+                if (iframeRef.current) {
+                    iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
+                }
             }
         });
         
@@ -278,26 +259,27 @@ socket.on('force-resume', ({ resumeTime }) => {
         syncSocket.emit('prepare-song', { roomCode, song: video });
     };
     
-    const handlePlay = () => {
-        if (isHost && syncSocket?.connected && syncPhase === 'playing' && selectedSong && !isPlaying) {
-            setIsPlaying(true);
-            iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-            syncSocket.emit('host-play', { roomCode });
-        }
-    };
-    
+    // ============================================
+    // HOST CONTROLS
+    // ============================================
     const handlePause = () => {
         if (isHost && syncSocket?.connected && syncPhase === 'playing' && isPlaying) {
+            console.log('[CLIENT] 👑 HOST PAUSE pressed');
             setIsPlaying(false);
-            iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+            if (iframeRef.current) {
+                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+            }
             syncSocket.emit('host-pause', { roomCode });
         }
     };
     
     const handleResume = () => {
         if (isHost && syncSocket?.connected && syncPhase === 'playing' && selectedSong && !isPlaying) {
+            console.log('[CLIENT] 👑 HOST RESUME pressed');
             setIsPlaying(true);
-            iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+            if (iframeRef.current) {
+                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+            }
             syncSocket.emit('host-resume', { roomCode });
         }
     };
@@ -308,7 +290,9 @@ socket.on('force-resume', ({ resumeTime }) => {
             setSyncPhase('idle');
             setSelectedSong(null);
             setCountdownNumber(null);
-            iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
+            if (iframeRef.current) {
+                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
+            }
             syncSocket.emit('host-stop', { roomCode });
         }
     };
