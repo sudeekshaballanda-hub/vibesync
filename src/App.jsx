@@ -191,18 +191,38 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         });
         
         socket.on('force-pause', () => {
-            if (!isHost && syncPhase === 'playing') {
-                setIsPlaying(false);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
-            }
-        });
+    if (!isHost && syncPhase === 'playing') {
+        console.log('[CLIENT] 📱 FORCE PAUSE received');
+        setIsPlaying(false);
         
-        socket.on('force-resume', ({ resumeTime }) => {
-            if (!isHost && syncPhase === 'playing') {
-                setIsPlaying(true);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+        const tryPause = (attempt = 0) => {
+            if (iframeRef.current) {
+                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+                console.log(`[CLIENT] ✅ PAUSE executed`);
+            } else if (attempt < 10) {
+                setTimeout(() => tryPause(attempt + 1), 100);
             }
-        });
+        };
+        tryPause();
+    }
+});
+
+socket.on('force-resume', ({ resumeTime }) => {
+    if (!isHost && syncPhase === 'playing') {
+        console.log(`[CLIENT] 📱 FORCE RESUME received at ${resumeTime}`);
+        setIsPlaying(true);
+        
+        const tryResume = (attempt = 0) => {
+            if (iframeRef.current) {
+                iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+                console.log(`[CLIENT] ✅ RESUME executed`);
+            } else if (attempt < 10) {
+                setTimeout(() => tryResume(attempt + 1), 100);
+            }
+        };
+        tryResume();
+    }
+});
         
         socket.on('force-stop', () => {
             if (!isHost) {
