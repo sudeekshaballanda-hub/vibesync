@@ -69,30 +69,25 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [roomMembers, setRoomMembers] = useState([]);
     const [chatMessages, setChatMessages] = useState([]);
     
-    // Sync states
     const [syncPhase, setSyncPhase] = useState('idle');
     const [preloadProgress, setPreloadProgress] = useState(0);
     const [completeCount, setCompleteCount] = useState(0);
     const [totalDevices, setTotalDevices] = useState(1);
     const [countdownNumber, setCountdownNumber] = useState(null);
-    
-    // Playback state - THIS IS CRITICAL
     const [isPlaying, setIsPlaying] = useState(false);
-    const [currentTime, setCurrentTime] = useState(0);
+    const [isPlayerReady, setIsPlayerReady] = useState(false);
     
     const iframeRef = useRef(null);
     const hiddenIframeRef = useRef(null);
-    const audioRef = useRef(null);
+    const playerReadyRef = useRef(false);
 
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
-    // Preload function
     const fullPreload = async (song) => {
         console.log(`[CLIENT] 📥 Preloading: ${song.snippet.title}`);
         setPreloadProgress(0);
         
         return new Promise((resolve) => {
-            let progress = 0;
             let resolved = false;
             
             const hiddenIframe = document.createElement('iframe');
@@ -109,7 +104,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             const audio = new Audio();
             audio.preload = 'auto';
             audio.src = `https://www.youtube.com/embed/${song.id.videoId}`;
-            audioRef.current = audio;
             
             const complete = () => {
                 if (!resolved) {
@@ -137,13 +131,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         socket.on('room-created', () => { setSyncStatus('Host Ready'); setIsSynced(true); });
         socket.on('room-joined', () => { setSyncStatus('Connected'); setIsSynced(true); });
         
-        socket.on('playback-state', ({ isPlaying: playing, currentSong }) => {
-            if (!isHost && currentSong) {
-                setIsPlaying(playing);
-                setSelectedSong(currentSong);
-            }
-        });
-        
         socket.on('preload-song', async ({ song }) => {
             setSelectedSong(song);
             setSyncPhase('preloading');
@@ -170,67 +157,63 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (number === 0) setCountdownNumber(null);
         });
         
-        socket.on('play-now', ({ song }) => {
+        // ============================================
+        // CRITICAL: AUTO-PLAY after countdown
+        // ============================================
+        socket.on('auto-play', ({ song, startTime }) => {
+            console.log(`[CLIENT] 🎬 AUTO-PLAY received at ${startTime}`);
             setSyncPhase('playing');
-            setIsPlaying(true);
             setSelectedSong(song);
+            setIsPlaying(true);
+            
+            // Load the iframe and autoplay
             if (iframeRef.current) {
-                iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
+                const videoId = song.id.videoId;
+                iframeRef.current.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&enablejsapi=1`;
             }
-            if (hiddenIframeRef.current) hiddenIframeRef.current.remove();
+            
+            // Clean up hidden iframe
+            if (hiddenIframeRef.current) {
+                hiddenIframeRef.current.remove();
+                hiddenIframeRef.current = null;
+            }
         });
         
         // ============================================
-        // CRITICAL: Playback sync events
+        // HOST PLAYBACK COMMANDS
         // ============================================
         
-        socket.on('force-play', ({ playAt }) => {
+        socket.on('force-play', ({ playTime }) => {
             if (!isHost && syncPhase === 'playing') {
-                console.log('[CLIENT] 📱 FORCE PLAY from host');
+                console.log(`[CLIENT] 📱 FORCE PLAY from host at ${playTime}`);
                 setIsPlaying(true);
-                const delay = Math.max(0, playAt - Date.now());
-                setTimeout(() => {
-                    if (iframeRef.current) {
-                        iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-                    }
-                }, delay);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             }
         });
         
         socket.on('force-pause', () => {
             if (!isHost && syncPhase === 'playing') {
-                console.log('[CLIENT] 📱 FORCE PAUSE from host');
+                console.log(`[CLIENT] 📱 FORCE PAUSE from host`);
                 setIsPlaying(false);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
             }
         });
         
-        socket.on('force-resume', ({ resumeAt }) => {
+        socket.on('force-resume', ({ resumeTime }) => {
             if (!isHost && syncPhase === 'playing') {
-                console.log('[CLIENT] 📱 FORCE RESUME from host');
+                console.log(`[CLIENT] 📱 FORCE RESUME from host at ${resumeTime}`);
                 setIsPlaying(true);
-                const delay = Math.max(0, resumeAt - Date.now());
-                setTimeout(() => {
-                    if (iframeRef.current) {
-                        iframeRef.current.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-                    }
-                }, delay);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             }
         });
         
         socket.on('force-stop', () => {
             if (!isHost) {
-                console.log('[CLIENT] 📱 FORCE STOP from host');
+                console.log(`[CLIENT] 📱 FORCE STOP from host`);
                 setIsPlaying(false);
                 setSyncPhase('idle');
                 setSelectedSong(null);
                 iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
-            }
-        });
-        
-        socket.on('force-seek', ({ position }) => {
-            if (!isHost) {
-                setCurrentTime(position);
             }
         });
         
@@ -279,12 +262,9 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         syncSocket.emit('prepare-song', { roomCode, song: video });
     };
     
-    // ============================================
-    // HOST CONTROLS - These send commands to ALL listeners
-    // ============================================
-    
+    // Host controls
     const handlePlay = () => {
-        if (isHost && syncSocket?.connected && syncPhase === 'playing' && selectedSong) {
+        if (isHost && syncSocket?.connected && syncPhase === 'playing' && selectedSong && !isPlaying) {
             console.log('[CLIENT] 👑 HOST PLAY pressed');
             setIsPlaying(true);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
@@ -293,7 +273,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     };
     
     const handlePause = () => {
-        if (isHost && syncSocket?.connected && syncPhase === 'playing') {
+        if (isHost && syncSocket?.connected && syncPhase === 'playing' && isPlaying) {
             console.log('[CLIENT] 👑 HOST PAUSE pressed');
             setIsPlaying(false);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
@@ -329,9 +309,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
-    // ============================================
     // PLAYING VIEW
-    // ============================================
     if (syncPhase === 'playing' && selectedSong) {
         return (
             <div className="player-view">
@@ -373,9 +351,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         );
     }
     
-    // ============================================
     // PRELOADING / COUNTDOWN VIEW
-    // ============================================
     if (selectedSong && syncPhase !== 'playing') {
         return (
             <div className="player-view">
@@ -419,9 +395,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         );
     }
 
-    // ============================================
     // MAIN ROOM VIEW
-    // ============================================
     const allMembers = [...roomMembers];
 
     return (

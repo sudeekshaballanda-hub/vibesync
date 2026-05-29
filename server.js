@@ -26,7 +26,6 @@ io.on('connection', (socket) => {
             currentSong: null,
             isPlaying: false,
             currentTime: 0,
-            playbackState: 'stopped', // stopped, playing, paused
             readyStates: new Map(),
             syncPhase: 'idle',
             messages: []
@@ -56,13 +55,6 @@ io.on('connection', (socket) => {
                 playbackReady: false 
             });
             
-            // Send current playback state to new listener
-            socket.emit('playback-state', {
-                isPlaying: room.isPlaying,
-                currentTime: room.currentTime,
-                currentSong: room.currentSong
-            });
-            
             socket.emit('room-joined', { roomCode });
             console.log(`[SERVER] 👤 ${listenerName} joined ${roomCode}`);
             
@@ -81,12 +73,11 @@ io.on('connection', (socket) => {
     // Host prepares a song
     socket.on('prepare-song', ({ roomCode, song }) => {
         const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
+        if (room && room.hostId === socket.id && room.syncPhase === 'idle') {
             room.currentSong = song;
             room.syncPhase = 'preloading';
             room.isPlaying = false;
             
-            // Reset ready states
             for (let [id, state] of room.readyStates) {
                 state.preloadComplete = false;
                 state.playbackReady = false;
@@ -143,8 +134,13 @@ io.on('connection', (socket) => {
                         clearInterval(interval);
                         room.syncPhase = 'playing';
                         room.isPlaying = true;
-                        io.to(roomCode).emit('play-now', { song: room.currentSong });
-                        console.log(`[SERVER] ▶️ PLAYBACK STARTED`);
+                        // CRITICAL: Send play command with timestamp for perfect sync
+                        const startTime = Date.now() + 50;
+                        io.to(roomCode).emit('auto-play', { 
+                            song: room.currentSong,
+                            startTime: startTime
+                        });
+                        console.log(`[SERVER] ▶️ AUTO-PLAY sent to ALL devices at ${startTime}`);
                     }
                 }, 1000);
                 room.countdownInterval = interval;
@@ -153,19 +149,16 @@ io.on('connection', (socket) => {
     });
 
     // ============================================
-    // CRITICAL: HOST PLAYBACK CONTROLS
+    // HOST PLAYBACK CONTROLS
     // ============================================
     
     socket.on('host-play', ({ roomCode }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id && room.currentSong && room.syncPhase === 'playing') {
             room.isPlaying = true;
-            room.playbackState = 'playing';
-            console.log(`[SERVER] ▶️ HOST PLAY - Broadcasting to all listeners`);
-            
-            // Broadcast play command with timestamp for perfect sync
-            const playAt = Date.now() + 50;
-            io.to(roomCode).emit('force-play', { playAt });
+            const playTime = Date.now() + 50;
+            console.log(`[SERVER] ▶️ HOST PLAY - Broadcasting at ${playTime}`);
+            io.to(roomCode).emit('force-play', { playTime });
         }
     });
     
@@ -173,10 +166,7 @@ io.on('connection', (socket) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.isPlaying = false;
-            room.playbackState = 'paused';
-            console.log(`[SERVER] ⏸️ HOST PAUSE - Broadcasting to all listeners`);
-            
-            // Broadcast pause command
+            console.log(`[SERVER] ⏸️ HOST PAUSE - Broadcasting`);
             io.to(roomCode).emit('force-pause');
         }
     });
@@ -185,11 +175,9 @@ io.on('connection', (socket) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id && room.currentSong && room.syncPhase === 'playing') {
             room.isPlaying = true;
-            room.playbackState = 'playing';
-            console.log(`[SERVER] ▶️ HOST RESUME - Broadcasting to all listeners`);
-            
-            const resumeAt = Date.now() + 50;
-            io.to(roomCode).emit('force-resume', { resumeAt });
+            const resumeTime = Date.now() + 50;
+            console.log(`[SERVER] ▶️ HOST RESUME - Broadcasting at ${resumeTime}`);
+            io.to(roomCode).emit('force-resume', { resumeTime });
         }
     });
     
@@ -197,22 +185,10 @@ io.on('connection', (socket) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.isPlaying = false;
-            room.playbackState = 'stopped';
-            room.currentSong = null;
             room.syncPhase = 'idle';
-            console.log(`[SERVER] ⏹️ HOST STOP - Broadcasting to all listeners`);
-            
+            room.currentSong = null;
+            console.log(`[SERVER] ⏹️ HOST STOP - Broadcasting`);
             io.to(roomCode).emit('force-stop');
-        }
-    });
-    
-    socket.on('host-seek', ({ roomCode, position }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
-            room.currentTime = position;
-            console.log(`[SERVER] ⏩ HOST SEEK to ${position}ms`);
-            
-            io.to(roomCode).emit('force-seek', { position });
         }
     });
 
