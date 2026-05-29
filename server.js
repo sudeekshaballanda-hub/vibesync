@@ -128,36 +128,118 @@ io.on('connection', (socket) => {
     // HOST CONTROLS - THESE MUST WORK
     // ============================================
     
-    socket.on('host-pause', ({ roomCode }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
-            room.isPlaying = false;
-            console.log(`[SERVER] ⏸️ HOST PAUSE - Broadcasting to ALL listeners`);
-            // Broadcast to ALL devices in room EXCEPT sender
-            socket.to(roomCode).emit('force-pause');
-            // Also send to host? Host already paused locally
-        }
+    // ============================================
+// CORRECTED PAUSE/RESUME/STOP HANDLERS
+// Replace these handlers in your server.js 
+// Find and replace the existing pause/resume/stop socket.on() handlers
+// ============================================
+
+// PAUSE EVENT - Host pauses, broadcast to ALL listeners
+socket.on('host-pause', ({ roomCode }) => {
+    const room = rooms.get(roomCode);
+    
+    // Verify: Is the sender the host? Is there a valid room?
+    if (!room) {
+        console.log(`❌ [SERVER] PAUSE: Room ${roomCode} not found`);
+        socket.emit('error', 'Room not found');
+        return;
+    }
+    
+    if (room.hostId !== socket.id) {
+        console.log(`❌ [SERVER] PAUSE: Non-host ${socket.id} tried to pause in ${roomCode}`);
+        socket.emit('error', 'Only host can control playback');
+        return;
+    }
+    
+    // Update room state
+    room.isPlaying = false;
+    console.log(`[SERVER] ⏸️  HOST PAUSE in room ${roomCode}`);
+    
+    // ✅ CRITICAL: Use io.to() to send to ALL devices in the room
+    // (includes listeners AND host, but listeners will ignore if !isHost)
+    io.to(roomCode).emit('force-pause', {
+        timestamp: Date.now(),
+        roomCode: roomCode,
+        source: 'host'
     });
     
-    socket.on('host-resume', ({ roomCode }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
-            room.isPlaying = true;
-            console.log(`[SERVER] ▶️ HOST RESUME - Broadcasting to ALL listeners`);
-            socket.to(roomCode).emit('force-resume');
-        }
+    console.log(`[SERVER] ✅ PAUSE broadcast sent to ${roomCode}`);
+});
+
+// RESUME EVENT - Host resumes, broadcast to ALL listeners
+socket.on('host-resume', ({ roomCode }) => {
+    const room = rooms.get(roomCode);
+    
+    // Verify: Is the sender the host? Is there a valid room?
+    if (!room) {
+        console.log(`❌ [SERVER] RESUME: Room ${roomCode} not found`);
+        socket.emit('error', 'Room not found');
+        return;
+    }
+    
+    if (room.hostId !== socket.id) {
+        console.log(`❌ [SERVER] RESUME: Non-host ${socket.id} tried to resume in ${roomCode}`);
+        socket.emit('error', 'Only host can control playback');
+        return;
+    }
+    
+    // Update room state
+    room.isPlaying = true;
+    console.log(`[SERVER] ▶️  HOST RESUME in room ${roomCode}`);
+    
+    // ✅ CRITICAL: Use io.to() to send to ALL devices in the room
+    io.to(roomCode).emit('force-resume', {
+        timestamp: Date.now(),
+        roomCode: roomCode,
+        source: 'host'
     });
     
-    socket.on('host-stop', ({ roomCode }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id) {
-            room.isPlaying = false;
-            room.syncPhase = 'idle';
-            room.currentSong = null;
-            console.log(`[SERVER] ⏹️ HOST STOP - Broadcasting`);
-            io.to(roomCode).emit('force-stop');
-        }
+    console.log(`[SERVER] ✅ RESUME broadcast sent to ${roomCode}`);
+});
+
+// STOP EVENT - Host stops playback completely
+socket.on('host-stop', ({ roomCode }) => {
+    const room = rooms.get(roomCode);
+    
+    // Verify: Is the sender the host? Is there a valid room?
+    if (!room) {
+        console.log(`❌ [SERVER] STOP: Room ${roomCode} not found`);
+        socket.emit('error', 'Room not found');
+        return;
+    }
+    
+    if (room.hostId !== socket.id) {
+        console.log(`❌ [SERVER] STOP: Non-host ${socket.id} tried to stop in ${roomCode}`);
+        socket.emit('error', 'Only host can control playback');
+        return;
+    }
+    
+    // Update room state
+    room.isPlaying = false;
+    room.syncPhase = 'idle';
+    room.currentSong = null;
+    
+    // Reset all device ready states
+    for (let [id, state] of room.readyStates) {
+        state.preloadComplete = false;
+        state.playbackReady = false;
+    }
+    
+    console.log(`[SERVER] ⏹️  HOST STOP in room ${roomCode}`);
+    
+    // ✅ CRITICAL: Use io.to() to send to ALL devices
+    io.to(roomCode).emit('force-stop', {
+        timestamp: Date.now(),
+        roomCode: roomCode,
+        source: 'host'
     });
+    
+    console.log(`[SERVER] ✅ STOP broadcast sent to ${roomCode}`);
+});
+
+//=======================================
+//Claude corrected the above pause/resume/stop handlers to ensure they broadcast to ALL devices in the room using io.to(roomCode).emit() instead of socket.emit(), which only sends to the sender. This is crucial for synchronizing playback across all listeners when the host controls playback.
+//=======================================
 
     socket.on('chat-message', ({ roomCode, text, sender }) => {
         const room = rooms.get(roomCode);
