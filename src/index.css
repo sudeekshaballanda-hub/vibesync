@@ -786,3 +786,83 @@ body {
     font-family: monospace;
     word-break: break-all;
 }
+
+/* Clock synchronization badge */
+.clock-badge {
+    font-size: 12px;
+    background: #1e1e1e;
+    padding: 4px 8px;
+    border-radius: 20px;
+    margin-left: 10px;
+}
+
+/* Drift indicator */
+.drift-indicator {
+    position: fixed;
+    top: 80px;
+    right: 20px;
+    background: #1e1e1e;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: bold;
+    z-index: 1000;
+    animation: fadeInOut 3s ease-in-out;
+}
+
+.drift-indicator.ahead {
+    background: #ff9800;
+    color: #1a1a1a;
+}
+
+.drift-indicator.behind {
+    background: #2196F3;
+    color: white;
+}
+
+@keyframes fadeInOut {
+    0% { opacity: 0; transform: translateY(-10px); }
+    10% { opacity: 1; transform: translateY(0); }
+    90% { opacity: 1; transform: translateY(0); }
+    100% { opacity: 0; transform: translateY(-10px); }
+}
+
+/* Progress bar for host */
+.progress-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    padding: 15px 20px;
+    background: #1e1e1e;
+    margin: 10px 20px;
+    border-radius: 8px;
+}
+
+.progress-bar {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    background: #333;
+    border-radius: 2px;
+    outline: none;
+}
+
+.progress-bar::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #4CAF50;
+    cursor: pointer;
+}
+
+.time-current, .time-total {
+    font-size: 12px;
+    color: #B0B0B0;
+    font-family: monospace;
+}
+
+.drift-warning {
+    color: #ff9800;
+    font-size: 12px;
+}
