@@ -14,27 +14,6 @@ const io = socketIo(server, {
 
 const rooms = new Map();
 
-// NTP Clock Sync - 8 samples for accuracy
-const performClockSync = (socket, callback) => {
-    const samples = [];
-    let completed = 0;
-    
-    const takeSample = () => {
-        const t1 = Date.now();
-        const t2 = Date.now();
-        const t3 = Date.now();
-        if (callback) {
-            callback({ t1, t2, t3 });
-        }
-        completed++;
-        if (completed < 5) {
-            setTimeout(takeSample, 200);
-        }
-    };
-    
-    takeSample();
-};
-
 io.on('connection', (socket) => {
     console.log(`[SERVER] ✅ Connected: ${socket.id}`);
 
@@ -85,6 +64,12 @@ io.on('connection', (socket) => {
                 playbackReady: false 
             });
             
+            // Send current playback state to new listener
+            socket.emit('playback-state', {
+                isPlaying: room.isPlaying,
+                currentTime: room.hostPlaybackTime
+            });
+            
             socket.emit('room-joined', { roomCode });
             console.log(`[SERVER] 👤 ${listenerName} joined`);
             
@@ -100,6 +85,7 @@ io.on('connection', (socket) => {
         if (room && room.hostId === socket.id && room.syncPhase === 'idle') {
             room.currentSong = song;
             room.syncPhase = 'preloading';
+            room.isPlaying = false;
             
             for (let [id, state] of room.readyStates) {
                 state.preloadComplete = false;
@@ -107,6 +93,7 @@ io.on('connection', (socket) => {
             }
             
             io.to(roomCode).emit('preload-song', { song });
+            console.log(`[SERVER] 📢 Preparing song: ${song.snippet.title}`);
         }
     });
 
@@ -117,6 +104,8 @@ io.on('connection', (socket) => {
             if (state) state.preloadComplete = true;
             
             const preloadCount = Array.from(room.readyStates.values()).filter(s => s.preloadComplete).length;
+            console.log(`[SERVER] 📊 Preload: ${preloadCount}/${room.readyStates.size}`);
+            
             io.to(roomCode).emit('preload-progress', { 
                 completeCount: preloadCount, 
                 totalDevices: room.readyStates.size 
@@ -136,8 +125,10 @@ io.on('connection', (socket) => {
             if (state) state.playbackReady = true;
             
             const readyCount = Array.from(room.readyStates.values()).filter(s => s.playbackReady).length;
+            console.log(`[SERVER] 📊 Playback ready: ${readyCount}/${room.readyStates.size}`);
             
             if (readyCount >= room.readyStates.size) {
+                console.log(`[SERVER] 🎉 ALL DEVICES READY! Starting countdown...`);
                 room.syncPhase = 'countdown';
                 let countdown = 5;
                 io.to(roomCode).emit('countdown-start', { number: countdown });
@@ -152,7 +143,6 @@ io.on('connection', (socket) => {
                         room.syncPhase = 'playing';
                         room.isPlaying = true;
                         room.hostStartTime = Date.now();
-                        // ADDED: Future scheduling with network buffer (800ms)
                         const NETWORK_BUFFER = 800;
                         const scheduleTime = room.hostStartTime + NETWORK_BUFFER;
                         
@@ -170,33 +160,14 @@ io.on('connection', (socket) => {
     });
 
     // ============================================
-    // HOST STATE BROADCAST (every 2 seconds)
+    // CRITICAL FIX: PAUSE/RESUME BROADCAST
     // ============================================
-    socket.on('host-broadcast', ({ roomCode, currentTime, isPlaying }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id && room.syncPhase === 'playing') {
-            room.hostPlaybackTime = currentTime;
-            room.isPlaying = isPlaying;
-            socket.to(roomCode).emit('host-broadcast', { 
-                currentTime: currentTime, 
-                isPlaying: isPlaying,
-                serverTime: Date.now()
-            });
-        }
-    });
-
-    socket.on('host-play', ({ roomCode }) => {
-        const room = rooms.get(roomCode);
-        if (room && room.hostId === socket.id && room.syncPhase === 'playing') {
-            room.isPlaying = true;
-            socket.to(roomCode).emit('force-play');
-        }
-    });
-    
     socket.on('host-pause', ({ roomCode }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id) {
             room.isPlaying = false;
+            console.log(`[SERVER] ⏸️ HOST PAUSE - Broadcasting to ALL listeners in room ${roomCode}`);
+            // Broadcast to ALL devices except host (host already paused locally)
             socket.to(roomCode).emit('force-pause');
         }
     });
@@ -205,7 +176,16 @@ io.on('connection', (socket) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id && room.syncPhase === 'playing') {
             room.isPlaying = true;
+            console.log(`[SERVER] ▶️ HOST RESUME - Broadcasting to ALL listeners in room ${roomCode}`);
             socket.to(roomCode).emit('force-resume');
+        }
+    });
+    
+    socket.on('host-play', ({ roomCode }) => {
+        const room = rooms.get(roomCode);
+        if (room && room.hostId === socket.id && room.syncPhase === 'playing') {
+            room.isPlaying = true;
+            socket.to(roomCode).emit('force-play');
         }
     });
     
@@ -227,6 +207,20 @@ io.on('connection', (socket) => {
         }
     });
 
+    // Host state broadcast for drift correction
+    socket.on('host-broadcast', ({ roomCode, currentTime, isPlaying }) => {
+        const room = rooms.get(roomCode);
+        if (room && room.hostId === socket.id && room.syncPhase === 'playing') {
+            room.hostPlaybackTime = currentTime;
+            room.isPlaying = isPlaying;
+            socket.to(roomCode).emit('host-broadcast', { 
+                currentTime: currentTime, 
+                isPlaying: isPlaying,
+                serverTime: Date.now()
+            });
+        }
+    });
+
     socket.on('chat-message', ({ roomCode, text, sender }) => {
         const room = rooms.get(roomCode);
         if (room) {
@@ -238,11 +232,13 @@ io.on('connection', (socket) => {
     });
 
     socket.on('disconnect', () => {
+        console.log(`[SERVER] ❌ Disconnected: ${socket.id}`);
         for (const [code, room] of rooms.entries()) {
             if (room.hostId === socket.id) {
                 if (room.countdownInterval) clearInterval(room.countdownInterval);
                 io.to(code).emit('host-left');
                 rooms.delete(code);
+                console.log(`[SERVER] 🔒 Room ${code} closed`);
                 break;
             }
             if (room.readyStates.has(socket.id)) {

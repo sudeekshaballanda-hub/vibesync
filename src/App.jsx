@@ -77,9 +77,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [countdownNumber, setCountdownNumber] = useState(null);
     const [isPlaying, setIsPlaying] = useState(false);
     
-    // ============================================
-    // MILLISECOND SYNCHRONIZATION ENGINE
-    // ============================================
+    // Synchronization engine
     const [clockOffset, setClockOffset] = useState(0);
     const [rtt, setRtt] = useState(0);
     const [playbackStartTime, setPlaybackStartTime] = useState(null);
@@ -100,7 +98,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
     // ============================================
-    // NTP CLOCK SYNCHRONIZATION (5 samples, outlier removal)
+    // NTP CLOCK SYNCHRONIZATION
     // ============================================
     const syncDeviceClock = useCallback(async () => {
         if (!socketRef.current) return 0;
@@ -125,7 +123,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         const avgOffset = trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
                         setClockOffset(avgOffset);
                         setRtt(rtt);
-                        console.log(`[CLIENT] Clock offset: ${Math.round(avgOffset)}ms, RTT: ${Math.round(rtt)}ms`);
+                        console.log(`[CLIENT] Clock offset: ${Math.round(avgOffset)}ms`);
                         resolve(avgOffset);
                     }
                 });
@@ -141,9 +139,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         return (performance.timeOrigin + performance.now()) + clockOffset;
     }, [clockOffset]);
 
-    // ============================================
-    // PLAYBACK TIME TRACKING
-    // ============================================
     const getCurrentPlaybackPosition = useCallback(() => {
         if (!isPlaying || !playbackStartTime) return 0;
         const elapsed = (getSyncedTime() - playbackStartTime) / 1000;
@@ -160,9 +155,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     }, [syncPhase, isPlaying, getCurrentPlaybackPosition]);
 
-    // ============================================
-    // HOST STATE BROADCAST (every 2 seconds)
-    // ============================================
+    // Host broadcast every 2 seconds
     useEffect(() => {
         if (isHost && syncPhase === 'playing' && isPlaying && socketRef.current?.connected) {
             if (broadcastIntervalRef.current) clearInterval(broadcastIntervalRef.current);
@@ -182,10 +175,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     }, [isHost, syncPhase, isPlaying, roomCode, getCurrentPlaybackPosition]);
 
-    // ============================================
-    // DRIFT DETECTION AND CORRECTION
-    // Deadzone: 10ms, Soft: 100-200ms (rate adjustment), Hard: >200ms (seek)
-    // ============================================
+    // Drift detection and correction
     const adjustPlaybackRate = useCallback((rate, duration) => {
         iframeRef.current?.contentWindow?.postMessage(
             JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [rate] }),
@@ -211,17 +201,14 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 
                 setDrift(driftMs);
                 
-                // Drift correction with deadzone
                 if (Math.abs(driftMs) < 10) {
                     // Within deadzone - ignore
                 } else if (Math.abs(driftMs) < 200) {
-                    // Soft correction: adjust playback rate
                     const rate = driftMs > 0 ? 0.99 : 1.01;
-                    console.log(`[DRIFT] Soft correction: ${driftMs.toFixed(0)}ms, rate: ${rate}`);
+                    console.log(`[DRIFT] Soft correction: ${driftMs.toFixed(0)}ms`);
                     adjustPlaybackRate(rate, 2000);
                 } else if (Math.abs(driftMs) >= 200) {
-                    // Hard correction: seek to host position
-                    console.log(`[DRIFT] Hard correction: ${driftMs.toFixed(0)}ms, seeking to ${hostTime.toFixed(3)}s`);
+                    console.log(`[DRIFT] Hard correction: ${driftMs.toFixed(0)}ms, seeking`);
                     iframeRef.current?.contentWindow?.postMessage(
                         JSON.stringify({ event: 'command', func: 'seekTo', args: [hostTime, true] }),
                         '*'
@@ -335,6 +322,16 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             setIsConnecting(false);
         });
         
+        // Playback state for new listeners
+        socket.on('playback-state', ({ isPlaying: playing, currentTime }) => {
+            if (!isHost) {
+                setIsPlaying(playing);
+                if (playing && currentTime > 0) {
+                    setPlaybackStartTime(getSyncedTime() - (currentTime * 1000));
+                }
+            }
+        });
+        
         socket.on('members-update', ({ members }) => {
             setRoomMembers(members.filter(m => !m.isHost));
         });
@@ -342,7 +339,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         socket.on('new-chat-message', (msg) => setChatMessages(prev => [...prev, msg]));
         socket.on('host-left', () => { alert('Host left'); onLeave(); });
         
-        // Host state broadcast for listeners
+        // Host broadcast for listeners
         socket.on('host-broadcast', ({ currentTime, isPlaying: hostPlaying }) => {
             if (!isHost) {
                 setHostPlaybackTime(currentTime);
@@ -352,7 +349,54 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }
         });
         
+        // ============================================
+        // CRITICAL FIX: PAUSE/RESUME HANDLERS
+        // ============================================
+        socket.on('force-pause', () => {
+            if (!isHost && syncPhase === 'playing') {
+                console.log('[CLIENT] 📱 FORCE PAUSE received - pausing playback');
+                setIsPlaying(false);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
+            }
+        });
+        
+        socket.on('force-resume', () => {
+            if (!isHost && syncPhase === 'playing') {
+                console.log('[CLIENT] 📱 FORCE RESUME received - resuming playback');
+                setIsPlaying(true);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+            }
+        });
+        
+        socket.on('force-play', () => {
+            if (!isHost && syncPhase === 'playing') {
+                setIsPlaying(true);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+            }
+        });
+        
+        socket.on('force-seek', ({ position }) => {
+            if (!isHost && syncPhase === 'playing') {
+                setPlaybackStartTime(getSyncedTime() - (position * 1000));
+                iframeRef.current?.contentWindow?.postMessage(
+                    JSON.stringify({ event: 'command', func: 'seekTo', args: [position, true] }),
+                    '*'
+                );
+            }
+        });
+        
+        socket.on('force-stop', () => {
+            if (!isHost) {
+                setIsPlaying(false);
+                setSyncPhase('idle');
+                setSelectedSong(null);
+                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
+            }
+        });
+        
+        // Preload events
         socket.on('preload-song', async ({ song }) => {
+            console.log('[CLIENT] 📢 Preload song received');
             setSelectedSong(song);
             setSyncPhase('preloading');
             setPreloadProgress(0);
@@ -406,9 +450,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (number === 0) setCountdownNumber(null);
         });
         
-        // ============================================
-        // MILLISECOND ACCURACY: Future scheduling
-        // ============================================
+        // Schedule play with future timestamp
         socket.on('schedule-play', ({ song, scheduleTime, hostStartTime }) => {
             console.log(`[CLIENT] 🎬 Schedule play at ${scheduleTime}`);
             setSyncPhase('playing');
@@ -420,12 +462,10 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             const now = getSyncedTime();
             const delay = Math.max(0, scheduleTime - now);
             
-            console.log(`[CLIENT] Scheduling playback in ${delay}ms`);
-            
             setTimeout(() => {
                 if (iframeRef.current) {
                     iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
-                    console.log(`[CLIENT] ✅ Playback started`);
+                    console.log('[CLIENT] ✅ Playback started');
                 }
             }, delay);
             
@@ -435,64 +475,25 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }
         });
         
-        socket.on('force-play', () => {
-            if (!isHost && syncPhase === 'playing') {
-                setIsPlaying(true);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-            }
-        });
-        
-        socket.on('force-pause', () => {
-            if (!isHost && syncPhase === 'playing') {
-                setIsPlaying(false);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
-            }
-        });
-        
-        socket.on('force-resume', () => {
-            if (!isHost && syncPhase === 'playing') {
-                setIsPlaying(true);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
-            }
-        });
-        
-        socket.on('force-seek', ({ position }) => {
-            if (!isHost && syncPhase === 'playing') {
-                setPlaybackStartTime(getSyncedTime() - (position * 1000));
-                iframeRef.current?.contentWindow?.postMessage(
-                    JSON.stringify({ event: 'command', func: 'seekTo', args: [position, true] }),
-                    '*'
-                );
-            }
-        });
-        
-        socket.on('force-stop', () => {
-            if (!isHost) {
-                setIsPlaying(false);
-                setSyncPhase('idle');
-                setSelectedSong(null);
-                iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"stopVideo","args":""}', '*');
-            }
-        });
-        
         return () => {
             socket.off('room-created');
             socket.off('room-joined');
+            socket.off('playback-state');
             socket.off('members-update');
             socket.off('new-chat-message');
             socket.off('host-left');
             socket.off('host-broadcast');
+            socket.off('force-pause');
+            socket.off('force-resume');
+            socket.off('force-play');
+            socket.off('force-seek');
+            socket.off('force-stop');
             socket.off('preload-song');
             socket.off('preload-progress');
             socket.off('verify-playback-ready');
             socket.off('countdown-start');
             socket.off('countdown-tick');
             socket.off('schedule-play');
-            socket.off('force-play');
-            socket.off('force-pause');
-            socket.off('force-resume');
-            socket.off('force-seek');
-            socket.off('force-stop');
         };
     }, [roomCode, isHost, onLeave, getSyncedTime]);
 
@@ -544,12 +545,16 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         setSearchLoading(false);
     };
 
+    // ============================================
+    // HOST PLAYS SONG
+    // ============================================
     const playSong = (video) => {
         if (!isHost) { alert('Only host can play'); return; }
         if (!socketRef.current?.connected) { alert('Not connected'); return; }
         if (!isSynced) { alert('Click "Start Sync" first'); return; }
         if (syncPhase !== 'idle') { alert('Song already preparing'); return; }
         
+        console.log('[CLIENT] 🎤 Host playing:', video.snippet.title);
         setSelectedSong(video);
         setSyncPhase('preloading');
         
@@ -586,8 +591,12 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         socketRef.current.emit('prepare-song', { roomCode, song: video });
     };
     
+    // ============================================
+    // HOST CONTROLS - These MUST broadcast to ALL listeners
+    // ============================================
     const handlePause = () => {
         if (isHost && socketRef.current?.connected && syncPhase === 'playing' && isPlaying) {
+            console.log('[CLIENT] 👑 HOST PAUSE pressed');
             setIsPlaying(false);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"pauseVideo","args":""}', '*');
             socketRef.current.emit('host-pause', { roomCode });
@@ -596,6 +605,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     
     const handleResume = () => {
         if (isHost && socketRef.current?.connected && syncPhase === 'playing' && selectedSong && !isPlaying) {
+            console.log('[CLIENT] 👑 HOST RESUME pressed');
             setIsPlaying(true);
             iframeRef.current?.contentWindow?.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
             socketRef.current.emit('host-resume', { roomCode });
@@ -615,6 +625,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     
     const handleStop = () => {
         if (isHost && socketRef.current?.connected && syncPhase !== 'idle') {
+            console.log('[CLIENT] 👑 HOST STOP pressed');
             setIsPlaying(false);
             setSyncPhase('idle');
             setSelectedSong(null);
@@ -667,7 +678,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         <span className={drift > 0 ? 'ahead' : 'behind'}>
                             {drift > 0 ? `🔸 Ahead by ${Math.abs(drift).toFixed(0)}ms` : `🔹 Behind by ${Math.abs(drift).toFixed(0)}ms`}
                         </span>
-                        <span className="clock-info">🕐 RTT: {Math.round(rtt)}ms</span>
                         <button onClick={() => setShowDriftDebug(false)} className="close-debug">×</button>
                     </div>
                 )}
@@ -676,7 +686,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     <div className="drift-debug host">
                         <span>👑 Host: {formatTime(currentPlaybackTime)}</span>
                         <span>📍 Source of truth</span>
-                        <span className="clock-info">🕐 Clock offset: {Math.round(clockOffset)}ms</span>
                         <button onClick={() => setShowDriftDebug(false)} className="close-debug">×</button>
                     </div>
                 )}
@@ -793,7 +802,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             </div>
             <div className="sync-status-bar">
                 📡 Status: {syncStatus} {isSynced ? '✅' : '⏳'}
-                {Math.abs(clockOffset) < 50 && clockOffset !== 0 && <span className="clock-badge"> 🕐 Clock synced</span>}
             </div>
             <div className="three-columns">
                 <div className="column search-column">
