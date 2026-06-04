@@ -78,9 +78,10 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const [isPlaying, setIsPlaying] = useState(false);
     
     // ============================================
-    // SYNCHRONIZATION ENGINE STATES
+    // MILLISECOND SYNCHRONIZATION ENGINE
     // ============================================
     const [clockOffset, setClockOffset] = useState(0);
+    const [rtt, setRtt] = useState(0);
     const [playbackStartTime, setPlaybackStartTime] = useState(null);
     const [currentPlaybackTime, setCurrentPlaybackTime] = useState(0);
     const [drift, setDrift] = useState(0);
@@ -99,7 +100,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     const YOUTUBE_API_KEY = process.env.REACT_APP_YOUTUBE_API_KEY || 'AIzaSyDv-8EXonJfRu-b2kYnPm2eiJYggp5e1Ew';
 
     // ============================================
-    // CLOCK SYNCHRONIZATION (NTP-style)
+    // NTP CLOCK SYNCHRONIZATION (5 samples, outlier removal)
     // ============================================
     const syncDeviceClock = useCallback(async () => {
         if (!socketRef.current) return 0;
@@ -109,12 +110,12 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             let completed = 0;
             
             const takeSample = () => {
-                const clientSend = Date.now();
-                socketRef.current.emit('sync-clock', clientSend, (response) => {
-                    const clientReceive = Date.now();
-                    const { serverTime } = response;
-                    const rtt = clientReceive - clientSend;
-                    const offset = serverTime - (clientSend + rtt / 2);
+                const t1 = performance.timeOrigin + performance.now();
+                socketRef.current.emit('sync', { t1 }, (response) => {
+                    const t4 = performance.timeOrigin + performance.now();
+                    const { t1: t1resp, t2, t3 } = response;
+                    const rtt = t4 - t1;
+                    const offset = (t2 + t3) / 2 - (t1 + rtt / 2);
                     samples.push(offset);
                     completed++;
                     
@@ -123,6 +124,8 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         const trimmed = samples.slice(1, -1);
                         const avgOffset = trimmed.reduce((a, b) => a + b, 0) / trimmed.length;
                         setClockOffset(avgOffset);
+                        setRtt(rtt);
+                        console.log(`[CLIENT] Clock offset: ${Math.round(avgOffset)}ms, RTT: ${Math.round(rtt)}ms`);
                         resolve(avgOffset);
                     }
                 });
@@ -135,7 +138,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     }, []);
 
     const getSyncedTime = useCallback(() => {
-        return Date.now() + clockOffset;
+        return (performance.timeOrigin + performance.now()) + clockOffset;
     }, [clockOffset]);
 
     // ============================================
@@ -147,18 +150,18 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         return Math.max(0, elapsed);
     }, [isPlaying, playbackStartTime, getSyncedTime]);
 
-    // Update current playback time for UI
+    // Update UI playback time
     useEffect(() => {
         if (syncPhase === 'playing' && isPlaying) {
             const interval = setInterval(() => {
                 setCurrentPlaybackTime(getCurrentPlaybackPosition());
-            }, 100);
+            }, 50);
             return () => clearInterval(interval);
         }
     }, [syncPhase, isPlaying, getCurrentPlaybackPosition]);
 
     // ============================================
-    // HOST STATE BROADCAST (every 1 second)
+    // HOST STATE BROADCAST (every 2 seconds)
     // ============================================
     useEffect(() => {
         if (isHost && syncPhase === 'playing' && isPlaying && socketRef.current?.connected) {
@@ -166,12 +169,12 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             
             broadcastIntervalRef.current = setInterval(() => {
                 const currentTime = getCurrentPlaybackPosition();
-                socketRef.current.emit('host-state-broadcast', {
+                socketRef.current.emit('host-broadcast', {
                     roomCode,
                     currentTime: currentTime,
                     isPlaying: isPlaying
                 });
-            }, 1000);
+            }, 2000);
             
             return () => {
                 if (broadcastIntervalRef.current) clearInterval(broadcastIntervalRef.current);
@@ -180,8 +183,22 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
     }, [isHost, syncPhase, isPlaying, roomCode, getCurrentPlaybackPosition]);
 
     // ============================================
-    // DRIFT DETECTION AND CORRECTION (Listeners)
+    // DRIFT DETECTION AND CORRECTION
+    // Deadzone: 10ms, Soft: 100-200ms (rate adjustment), Hard: >200ms (seek)
     // ============================================
+    const adjustPlaybackRate = useCallback((rate, duration) => {
+        iframeRef.current?.contentWindow?.postMessage(
+            JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [rate] }),
+            '*'
+        );
+        setTimeout(() => {
+            iframeRef.current?.contentWindow?.postMessage(
+                JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [1.0] }),
+                '*'
+            );
+        }, duration);
+    }, []);
+
     useEffect(() => {
         if (!isHost && syncPhase === 'playing' && isPlaying && socketRef.current?.connected) {
             if (driftCheckIntervalRef.current) clearInterval(driftCheckIntervalRef.current);
@@ -194,40 +211,22 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 
                 setDrift(driftMs);
                 
-                // Report drift to server for logging
-                socketRef.current.emit('listener-drift-report', {
-                    roomCode,
-                    drift: driftMs,
-                    listenerTime: myTime
-                });
-                
-                // DRIFT CORRECTION LOGIC
-                if (Math.abs(driftMs) > 500) {
-                    // Large drift: seek to correct position
-                    console.log(`[DRIFT] Large drift: ${driftMs.toFixed(0)}ms - seeking to ${hostTime.toFixed(3)}s`);
+                // Drift correction with deadzone
+                if (Math.abs(driftMs) < 10) {
+                    // Within deadzone - ignore
+                } else if (Math.abs(driftMs) < 200) {
+                    // Soft correction: adjust playback rate
+                    const rate = driftMs > 0 ? 0.99 : 1.01;
+                    console.log(`[DRIFT] Soft correction: ${driftMs.toFixed(0)}ms, rate: ${rate}`);
+                    adjustPlaybackRate(rate, 2000);
+                } else if (Math.abs(driftMs) >= 200) {
+                    // Hard correction: seek to host position
+                    console.log(`[DRIFT] Hard correction: ${driftMs.toFixed(0)}ms, seeking to ${hostTime.toFixed(3)}s`);
                     iframeRef.current?.contentWindow?.postMessage(
                         JSON.stringify({ event: 'command', func: 'seekTo', args: [hostTime, true] }),
                         '*'
                     );
                     setPlaybackStartTime(getSyncedTime() - (hostTime * 1000));
-                } else if (Math.abs(driftMs) > 100) {
-                    // Medium drift: adjust playback rate smoothly
-                    const rate = driftMs > 0 ? 0.98 : 1.02;
-                    console.log(`[DRIFT] Medium drift: ${driftMs.toFixed(0)}ms - adjusting rate to ${rate}`);
-                    iframeRef.current?.contentWindow?.postMessage(
-                        JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [rate] }),
-                        '*'
-                    );
-                    // Reset rate after 2 seconds
-                    setTimeout(() => {
-                        iframeRef.current?.contentWindow?.postMessage(
-                            JSON.stringify({ event: 'command', func: 'setPlaybackRate', args: [1.0] }),
-                            '*'
-                        );
-                    }, 2000);
-                } else if (Math.abs(driftMs) > 30) {
-                    // Small drift: log only (no action needed for <30ms)
-                    console.log(`[DRIFT] Small drift: ${driftMs.toFixed(0)}ms - within tolerance`);
                 }
             }, 2000);
             
@@ -235,7 +234,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                 if (driftCheckIntervalRef.current) clearInterval(driftCheckIntervalRef.current);
             };
         }
-    }, [isHost, syncPhase, isPlaying, hostPlaybackTime, getCurrentPlaybackPosition, roomCode, getSyncedTime]);
+    }, [isHost, syncPhase, isPlaying, hostPlaybackTime, getCurrentPlaybackPosition, getSyncedTime, adjustPlaybackRate]);
 
     // ============================================
     // WEBSOCKET CONNECTION
@@ -343,8 +342,8 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         socket.on('new-chat-message', (msg) => setChatMessages(prev => [...prev, msg]));
         socket.on('host-left', () => { alert('Host left'); onLeave(); });
         
-        // Host state broadcast (for listeners)
-        socket.on('host-state', ({ currentTime, isPlaying: hostPlaying, serverTime }) => {
+        // Host state broadcast for listeners
+        socket.on('host-broadcast', ({ currentTime, isPlaying: hostPlaying }) => {
             if (!isHost) {
                 setHostPlaybackTime(currentTime);
                 if (hostPlaying !== isPlaying) {
@@ -353,7 +352,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             }
         });
         
-        // Preload events
         socket.on('preload-song', async ({ song }) => {
             setSelectedSong(song);
             setSyncPhase('preloading');
@@ -408,18 +406,26 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             if (number === 0) setCountdownNumber(null);
         });
         
-        // AUTO PLAY
-        socket.on('auto-play', ({ song, startTime, hostStartTime }) => {
+        // ============================================
+        // MILLISECOND ACCURACY: Future scheduling
+        // ============================================
+        socket.on('schedule-play', ({ song, scheduleTime, hostStartTime }) => {
+            console.log(`[CLIENT] 🎬 Schedule play at ${scheduleTime}`);
             setSyncPhase('playing');
             setSelectedSong(song);
             setIsPlaying(true);
             setPlaybackStartTime(hostStartTime);
             setDrift(0);
             
-            const delay = Math.max(0, startTime - Date.now());
+            const now = getSyncedTime();
+            const delay = Math.max(0, scheduleTime - now);
+            
+            console.log(`[CLIENT] Scheduling playback in ${delay}ms`);
+            
             setTimeout(() => {
                 if (iframeRef.current) {
                     iframeRef.current.src = `https://www.youtube.com/embed/${song.id.videoId}?autoplay=1&enablejsapi=1`;
+                    console.log(`[CLIENT] ✅ Playback started`);
                 }
             }, delay);
             
@@ -475,20 +481,20 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             socket.off('members-update');
             socket.off('new-chat-message');
             socket.off('host-left');
-            socket.off('host-state');
+            socket.off('host-broadcast');
             socket.off('preload-song');
             socket.off('preload-progress');
             socket.off('verify-playback-ready');
             socket.off('countdown-start');
             socket.off('countdown-tick');
-            socket.off('auto-play');
+            socket.off('schedule-play');
             socket.off('force-play');
             socket.off('force-pause');
             socket.off('force-resume');
             socket.off('force-seek');
             socket.off('force-stop');
         };
-    }, [roomCode, isHost, onLeave, getSyncedTime, syncPhase]);
+    }, [roomCode, isHost, onLeave, getSyncedTime]);
 
     // ============================================
     // START SYNC
@@ -625,7 +631,6 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
         }
     };
 
-    // Format time for display
     const formatTime = (seconds) => {
         const mins = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60);
@@ -662,6 +667,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                         <span className={drift > 0 ? 'ahead' : 'behind'}>
                             {drift > 0 ? `🔸 Ahead by ${Math.abs(drift).toFixed(0)}ms` : `🔹 Behind by ${Math.abs(drift).toFixed(0)}ms`}
                         </span>
+                        <span className="clock-info">🕐 RTT: {Math.round(rtt)}ms</span>
                         <button onClick={() => setShowDriftDebug(false)} className="close-debug">×</button>
                     </div>
                 )}
@@ -670,6 +676,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
                     <div className="drift-debug host">
                         <span>👑 Host: {formatTime(currentPlaybackTime)}</span>
                         <span>📍 Source of truth</span>
+                        <span className="clock-info">🕐 Clock offset: {Math.round(clockOffset)}ms</span>
                         <button onClick={() => setShowDriftDebug(false)} className="close-debug">×</button>
                     </div>
                 )}
@@ -786,7 +793,7 @@ function RoomScreen({ roomCode, isHost, onLeave }) {
             </div>
             <div className="sync-status-bar">
                 📡 Status: {syncStatus} {isSynced ? '✅' : '⏳'}
-                {clockOffset !== 0 && <span className="clock-badge"> 🕐 Clock synced</span>}
+                {Math.abs(clockOffset) < 50 && clockOffset !== 0 && <span className="clock-badge"> 🕐 Clock synced</span>}
             </div>
             <div className="three-columns">
                 <div className="column search-column">

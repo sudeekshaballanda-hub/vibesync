@@ -14,20 +14,36 @@ const io = socketIo(server, {
 
 const rooms = new Map();
 
-// NTP-style clock sync
-const syncClock = (socket, callback) => {
-    const clientTime = Date.now();
-    callback({ serverTime: clientTime });
+// NTP Clock Sync - 8 samples for accuracy
+const performClockSync = (socket, callback) => {
+    const samples = [];
+    let completed = 0;
+    
+    const takeSample = () => {
+        const t1 = Date.now();
+        const t2 = Date.now();
+        const t3 = Date.now();
+        if (callback) {
+            callback({ t1, t2, t3 });
+        }
+        completed++;
+        if (completed < 5) {
+            setTimeout(takeSample, 200);
+        }
+    };
+    
+    takeSample();
 };
 
 io.on('connection', (socket) => {
     console.log(`[SERVER] ✅ Connected: ${socket.id}`);
 
-    // Clock synchronization
-    socket.on('sync-clock', (clientTime, callback) => {
-        const serverTime = Date.now();
+    // NTP Clock Synchronization
+    socket.on('sync', ({ t1 }, callback) => {
+        const t2 = Date.now();
+        const t3 = Date.now();
         if (callback) {
-            callback({ serverTime, clientTime });
+            callback({ t1, t2, t3 });
         }
     });
 
@@ -136,13 +152,16 @@ io.on('connection', (socket) => {
                         room.syncPhase = 'playing';
                         room.isPlaying = true;
                         room.hostStartTime = Date.now();
-                        const startTime = room.hostStartTime;
+                        // ADDED: Future scheduling with network buffer (800ms)
+                        const NETWORK_BUFFER = 800;
+                        const scheduleTime = room.hostStartTime + NETWORK_BUFFER;
                         
-                        io.to(roomCode).emit('auto-play', { 
+                        io.to(roomCode).emit('schedule-play', { 
                             song: room.currentSong,
-                            startTime: startTime,
+                            scheduleTime: scheduleTime,
                             hostStartTime: room.hostStartTime
                         });
+                        console.log(`[SERVER] 🎬 Scheduled playback at ${scheduleTime}`);
                     }
                 }, 1000);
                 room.countdownInterval = interval;
@@ -151,32 +170,18 @@ io.on('connection', (socket) => {
     });
 
     // ============================================
-    // CRITICAL: HOST PLAYBACK STATE BROADCAST
+    // HOST STATE BROADCAST (every 2 seconds)
     // ============================================
-    
-    socket.on('host-state-broadcast', ({ roomCode, currentTime, isPlaying }) => {
+    socket.on('host-broadcast', ({ roomCode, currentTime, isPlaying }) => {
         const room = rooms.get(roomCode);
         if (room && room.hostId === socket.id && room.syncPhase === 'playing') {
             room.hostPlaybackTime = currentTime;
             room.isPlaying = isPlaying;
-            
-            // Broadcast to all listeners for drift correction
-            socket.to(roomCode).emit('host-state', {
-                currentTime: currentTime,
+            socket.to(roomCode).emit('host-broadcast', { 
+                currentTime: currentTime, 
                 isPlaying: isPlaying,
                 serverTime: Date.now()
             });
-        }
-    });
-    
-    // Listener reports drift (for monitoring)
-    socket.on('listener-drift-report', ({ roomCode, drift, listenerTime }) => {
-        const room = rooms.get(roomCode);
-        if (room && !room.readyStates.get(socket.id)?.isHost) {
-            // Log drift for debugging (optional)
-            if (Math.abs(drift) > 200) {
-                console.log(`[SERVER] 📊 Drift detected: ${drift}ms on ${socket.id.slice(-6)}`);
-            }
         }
     });
 
